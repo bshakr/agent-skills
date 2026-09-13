@@ -13,6 +13,7 @@ Repository: https://github.com/bshakr/agent-skills
 | [`ship-ticket`](./ship-ticket) | 2.0.0 | Ship a Linear ticket end-to-end: duplicate check, locked worktree, premise reproduction, opus implementer, mandatory review gate, then `pr-handover`. |
 | [`review-ledger`](./review-ledger) | 1.0.0 | Coordinate review of multi-task subagent work: blocking pre-flight plan scan, per-task brief, first review, consolidated fix batch, scoped delta re-review, ruling ledger, prose-only freeze. |
 | [`pr-handover`](./pr-handover) | 1.0.0 | Coordinator tail from reviewed HEAD to handed-over PR: re-run the gates yourself, rebase, duplicate-PR check, capture agent, gallery Artifact, PR from the template, `pr-append-section` only, CI wait, mergeable check, backlinks, merge watch. |
+| [`design-directions`](./design-directions) | 1.0.0 | Run the direction round before any visible surface is built: a brand director writes N divergent directions with a differentiation test, a design director writes craft rules plus one art-direction sheet per direction, one builder per lane sees only its own sheet, independent 12-check QA returns FIX FIRST or SHIP TO FOUNDER, then a live preview per direction inside one gallery, the design record, and the pick. |
 | [`capture-pairs`](./capture-pairs) | 1.0.0 | Before/after screenshot capture run by a capture subagent: detached worktree at the true fork point, private ports, injected sessions, per-shot route/theme assertions, phone overflow probe, fixture restore, rp-gallery manifest + VERDICT. Per-project appendices. |
 | [`test-plan-builder`](./test-plan-builder) | 1.0.1 | Build a code-grounded, multi-tab QA test plan for a feature spanning one or more repos — fans out parallel research subagents per repo/layer, reconciles what's actually implemented vs the spec, and outputs a formatted spreadsheet. |
 | [`rich-report`](./rich-report) | 1.0.0 | Turn a completed Markdown plan, summary, or report into a polished local web page — an editorial layer of highlights, timelines, risks, and mermaid diagrams over the full source. Reports are added to a single hub at `~/.rich-report` that serves them all from one long-running server on port 4400 with an index grouped by project. The agent authors one MDX file per report; dependencies install once for the hub. |
@@ -70,6 +71,7 @@ ln -s ~/code/agent-skills/ship-ticket ~/.claude/skills/ship-ticket
 ln -s ~/code/agent-skills/review-ledger ~/.claude/skills/review-ledger
 ln -s ~/code/agent-skills/pr-handover ~/.claude/skills/pr-handover
 ln -s ~/code/agent-skills/capture-pairs ~/.claude/skills/capture-pairs
+ln -s ~/code/agent-skills/design-directions ~/.claude/skills/design-directions
 ln -s ~/code/agent-skills/test-plan-builder ~/.claude/skills/test-plan-builder
 ln -s ~/code/agent-skills/rich-report ~/.claude/skills/rich-report
 ```
