@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""pr-append-section — add or replace one section of a PR body without clobbering the rest.
+
+  pr-append-section <pr-number|pr-url> --title "## Screenshots"
+                    (--file body.md | --text "...") [--replace] [--repo owner/name] [--top]
+
+Exit codes: 0 written (or already present, unchanged), 1 write/verification failed,
+3 PR not found, 64 usage error.
+
+Why this exists (retro 2026-09-13): `gh pr edit --body-file` reports success while
+dropping the edit, and rebuilding a body from a stale snapshot destroyed a gallery
+link on core #35 whose read-back only grepped for its own additions, so it could
+never notice what it had deleted (report b02 section 4). And an unquoted heredoc ate
+the backticks out of a PR body (b06 section 4). So: re-fetch the live body
+immediately before writing, splice only the named section, send the new body through
+a temp file with no shell involved, and verify the whole body byte-for-byte after.
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+PROG = "pr-append-section"
+
+EXIT_OK = 0
+EXIT_FAIL = 1
+EXIT_NO_PR = 3
+EXIT_USAGE = 64
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+SUMMARY_RE = re.compile(r"^#{1,6}\s+summary\b", re.IGNORECASE)
+
+
+def err(msg: str) -> None:
+    print(f"{PROG}: {msg}", file=sys.stderr)
+
+
+def die(msg: str, code: int = EXIT_USAGE) -> "NoReturn":  # type: ignore[name-defined]
+    err(msg)
+    raise SystemExit(code)
+
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+# --------------------------------------------------------------------------
+# target resolution
+# --------------------------------------------------------------------------
+def resolve_target(target: str, repo_flag: str | None) -> tuple[str, int]:
+    repo = repo_flag
+    if target.startswith(("http://", "https://")):
+        m = re.match(r"^https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", target)
+        if not m:
+            die(f"could not read owner/repo/number out of URL: {target}")
+        if not repo:
+            repo = f"{m.group(1)}/{m.group(2)}"
+        number = int(m.group(3))
+    else:
+        if not target.isdigit():
+            die(f"first argument must be a PR number or a PR URL: {target}")
+        number = int(target)
+    if not repo:
+        p = run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+        if p.returncode != 0 or not p.stdout.strip():
+            die("no --repo given and the current directory has no GitHub remote")
+        repo = p.stdout.strip()
+    if repo.count("/") != 1:
+        die(f"--repo must look like owner/name, got: {repo}")
+    return repo, number
+
+
+def fetch_body(repo: str, number: int) -> str:
+    p = run(["gh", "api", f"repos/{repo}/pulls/{number}"])
+    if p.returncode != 0:
+        err(f"PR {number} not found in {repo}")
+        err(p.stderr.strip())
+        raise SystemExit(EXIT_NO_PR)
+    try:
+        data = json.loads(p.stdout)
+    except json.JSONDecodeError as exc:
+        die(f"gh api returned something that is not JSON: {exc}", EXIT_FAIL)
+    return data.get("body") or ""
+
+
+# --------------------------------------------------------------------------
+# body surgery — line splicing only, everything untouched stays byte-for-byte
+# --------------------------------------------------------------------------
+def heading_level(line: str) -> int:
+    """Return the ATX heading level of a line, or 0 when it is not a heading."""
+    m = HEADING_RE.match(line.rstrip("\r\n"))
+    return len(m.group(1)) if m else 0
+
+
+def find_heading(lines: list[str], title: str) -> int:
+    """Index of the line that is exactly the requested heading, else -1.
+
+    Match is exact on the heading line, ignoring only the line terminator and
+    trailing whitespace, so '## Screenshots' will not match '## Screenshots (old)'.
+    """
+    want = title.rstrip()
+    for i, line in enumerate(lines):
+        if line.rstrip("\r\n").rstrip() == want:
+            return i
+    return -1
+
+
+def section_end(lines: list[str], start: int, level: int) -> int:
+    """Index one past the last line of the section opened at `start`."""
+    for i in range(start + 1, len(lines)):
+        lvl = heading_level(lines[i])
+        if lvl and lvl <= level:
+            return i
+    return len(lines)
+
+
+def insertion_point(lines: list[str], top: bool) -> int:
+    """Where a brand new section goes: at the very top (--top), else after the
+    Summary section, else at the end.
+
+    With --top the section lands at the head of the body, except that a level-1
+    heading is treated as the document title and kept above it.
+    """
+    if top:
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            return i + 1 if heading_level(line) == 1 else i
+        return 0
+    for i, line in enumerate(lines):
+        if SUMMARY_RE.match(line.rstrip("\r\n")):
+            return section_end(lines, i, heading_level(line))
+    return len(lines)
+
+
+def build_body(body: str, title: str, text: str, replace: bool, top: bool) -> tuple[str, str]:
+    """Return (new_body, what_happened)."""
+    eol = "\r\n" if "\r\n" in body else "\n"
+    flat = text.replace("\r\n", "\n").rstrip("\n")
+    text_lines = [ln + eol for ln in flat.split("\n")] if flat.strip() else []
+    title_line = title.rstrip() + eol
+
+    lines = body.splitlines(keepends=True)
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        lines[-1] = lines[-1] + eol
+
+    idx = find_heading(lines, title)
+
+    if idx == -1:
+        at = insertion_point(lines, top)
+        block: list[str] = []
+        if at > 0 and lines[at - 1].strip():
+            block.append(eol)
+        block.append(title_line)
+        block.append(eol)
+        block.extend(text_lines)
+        if at < len(lines) and lines[at].strip():
+            block.append(eol)
+        return "".join(lines[:at] + block + lines[at:]), "inserted new section"
+
+    level = heading_level(lines[idx]) or 2
+    end = section_end(lines, idx, level)
+    current = "".join(lines[idx + 1 : end])
+
+    if replace:
+        block = [eol] + text_lines
+        if end < len(lines) and lines[end].strip():
+            block.append(eol)
+        new_lines = lines[: idx + 1] + block + lines[end:]
+        new_body = "".join(new_lines)
+        if new_body == body:
+            return body, "already exact, nothing written"
+        return new_body, "replaced section content"
+
+    # Append mode: idempotent — if the block is already inside the section, stop.
+    if text.replace("\r\n", "\n").rstrip("\n") in current.replace("\r\n", "\n"):
+        return body, "already present in the section, nothing written"
+
+    tail = end
+    while tail > idx + 1 and not lines[tail - 1].strip():
+        tail -= 1
+    block = []
+    if tail > idx + 1:
+        block.append(eol)
+    block.extend(text_lines)
+    if tail < len(lines) and lines[tail].strip():
+        block.append(eol)
+    return "".join(lines[:tail] + block + lines[tail:]), "appended to existing section"
+
+
+# --------------------------------------------------------------------------
+def patch_body(repo: str, number: int, new_body: str) -> None:
+    fd, path = tempfile.mkstemp(prefix="pr-append-section.", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(new_body)
+        # No shell: argv list, body read from a file. Backticks, $(), quotes and
+        # heredoc markers in the body are inert.
+        p = run(["gh", "api", "-X", "PATCH", f"repos/{repo}/pulls/{number}", "-F", f"body=@{path}"])
+        if p.returncode != 0:
+            err("gh api PATCH failed:")
+            err(p.stderr.strip())
+            raise SystemExit(EXIT_FAIL)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def verify(repo: str, number: int, intended: str, original: str) -> int:
+    live = fetch_body(repo, number)
+    if live == intended:
+        return EXIT_OK
+    if live.replace("\r\n", "\n") == intended.replace("\r\n", "\n"):
+        err("verified, but GitHub normalised the line endings (content identical)")
+        return EXIT_OK
+    err("VERIFICATION FAILED — the live body is not what was written.")
+    err("Diff (intended -> live):")
+    for line in difflib.unified_diff(
+        intended.replace("\r\n", "\n").splitlines(),
+        live.replace("\r\n", "\n").splitlines(),
+        fromfile="intended",
+        tofile="live",
+        lineterm="",
+    ):
+        print(line, file=sys.stderr)
+    lost = [
+        ln
+        for ln in original.replace("\r\n", "\n").splitlines()
+        if ln.strip() and ln not in live.replace("\r\n", "\n").splitlines()
+    ]
+    if lost:
+        err(f"{len(lost)} line(s) present before the write are missing from the live body.")
+    return EXIT_FAIL
+
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error; this tool reserves 2, so use 64."""
+
+    def error(self, message):  # noqa: D401
+        self.print_usage(sys.stderr)
+        err(message)
+        raise SystemExit(64)
+
+def main() -> int:
+    ap = _Parser(prog=PROG, add_help=True, description=__doc__)
+    ap.add_argument("target", help="PR number or PR URL")
+    ap.add_argument("--title", required=True, help='exact heading line, e.g. "## Screenshots"')
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--file", help="read the section text from this file")
+    src.add_argument("--text", help="section text given inline")
+    ap.add_argument("--replace", action="store_true", help="replace the section instead of appending")
+    ap.add_argument("--repo", help="owner/name (default: from the URL, else the cwd remote)")
+    ap.add_argument("--top", action="store_true", help="a new section goes right after the first heading")
+    ap.add_argument("--dry-run", action="store_true", help="print the new body, write nothing")
+    args = ap.parse_args()
+
+    title = args.title.strip()
+    if not title:
+        die("--title must not be empty")
+    if not title.startswith("#"):
+        title = "## " + title
+        err(f'--title had no leading "#"; using {title!r}')
+
+    if args.file:
+        try:
+            with open(args.file, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            die(f"cannot read --file: {exc}")
+    else:
+        text = args.text or ""
+    if not text.strip() and not args.replace:
+        die("--text/--file is empty; pass --replace if you mean to empty the section")
+
+    repo, number = resolve_target(args.target, args.repo)
+
+    # Re-fetch the LIVE body immediately before computing the write.
+    original = fetch_body(repo, number)
+    new_body, what = build_body(original, title, text, args.replace, args.top)
+
+    if args.dry_run:
+        sys.stdout.write(new_body)
+        err(f"dry run: would have {what} on {repo}#{number}")
+        return EXIT_OK
+
+    if new_body == original:
+        err(f"{repo}#{number}: {what} (body unchanged)")
+        return EXIT_OK
+
+    patch_body(repo, number, new_body)
+    rc = verify(repo, number, new_body, original)
+    if rc == EXIT_OK:
+        err(f"{repo}#{number}: {what}, verified against the live body")
+    return rc
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

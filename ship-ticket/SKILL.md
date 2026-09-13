@@ -2,18 +2,36 @@
 name: ship-ticket
 description: End-to-end workflow for shipping a Linear ticket. Sets up a fresh worktree off origin/main, plans the work, runs TDD-style implementation, runs /review, addresses findings, and opens a PR. Invoke when the user says "ship X", "tackle the next ticket", "/ship-ticket BLO-XXX", or any phrasing that means "do a whole ticket end-to-end".
 user-invocable: true
-version: 1.0.1
+version: 2.0.0
 repo: https://github.com/bshakr/agent-skills
 skill_path: ship-ticket
 ---
 
 # Ship Ticket — End-to-End Workflow
 
-Use this when the user wants a ticket taken from "no branch yet" to "PR opened" without micro-managing each step. The user's CLAUDE.md rules still apply (worktree per ticket, Linear CLI over MCP, no destructive git ops without consent). Re-read `~/.claude/CLAUDE.md` if you've drifted.
+Use this when the user wants a ticket taken from "no branch yet" to "PR opened" without micro-managing each step.
 
 ## HARD GATE — `/review` is mandatory
 
-Every ticket. Every size. Every category. No "diff is small" or "deletions only" or "I already grepped" exception. The only valid post-commit sequence is **rebase → `/review` → fix findings → push**. If `/review` has not run on the current HEAD, you may not push. The PR body must include `- [x] /review ran on <SHA> — <N findings | 0 findings>`; missing that line means the PR is incomplete. This rule exists because skipping review shipped real regressions in past sessions.
+Every ticket, every size, no "diff is small" / "deletions only" / "I already grepped" exception. The only valid post-commit sequence is **rebase → review → fix findings → push**; if the review gate hasn't run on current HEAD, you may not push. The PR body must carry `- [x] /review ran on <SHA> — <N findings | 0 findings>`. Skipping review shipped real regressions in BLO-944, BLO-985 and BLO-986.
+
+## Defaults you no longer need to be told
+
+Bass typed this topology at the start of six sessions. It is the default. Don't ask for it, don't restate it back.
+
+- **Implementation runs in subagents on `model: "opus"`.** You plan, brief, verify, review and report. You don't write the feature diff yourself.
+- **`model: "sonnet"`** for mechanical or fully specified work (captures, resends, formatting, small-diff re-reviews). **`Explore` with `model: "haiku"`** for read-only search. **`model: "fable"`** only for design work (mockups, artboards, visual direction). Pass `model` explicitly on every Agent call; never let one inherit.
+- **Never pass `name:` to Agent** (idle-notification routing bug, Claude Code #81439). Address agents by the returned agent_id.
+- **Every brief ends with this footer, verbatim:**
+
+  > Write your full report to `<path>` and make your LAST action a SendMessage (or your final reply) containing only: the path, a one-line verdict, and Critical/Important/Minor counts. Never paste the report inline; never write reports as plain assistant text mid-task.
+
+  Every brief below assumes that footer is attached. You read the file. You never spend a turn narrating an idle notification.
+- **TaskStop every agent the moment its terminal report is in.** 41 live agents accumulated over three hours on 09-12.
+- **Status line every ~10 minutes while agents run**, unprompted: what's running, what landed, what's next. Bass asking "how's it going?" is the failure.
+- **Publish artifacts at first usable state**, then republish to the SAME URL as the rest arrives. Never hold a gallery for the last shot.
+
+Subagents never spawn their own fan-out. Model and delegation policy live in `~/.claude/CLAUDE.md`; wave, merge, CI and screenshot-discipline rules in `~/.claude/rules/ritualpass-workflow.md`; multi-PR coordination in the `wave` skill. Follow them, don't restate them.
 
 ## Step 0: Version check (run first, every invocation)
 
@@ -77,22 +95,36 @@ If the output is `UP_TO_DATE` or `SKIP_CHECK`, proceed silently to Step 1.
 
 If no ticket id can be inferred, stop and ask. Do not invent.
 
-## Step 1 — Set up the worktree
+## Step 1 — Claim the ticket and set up the worktree
 
-From the main repo (not from inside another worktree). CLAUDE.md mandates `.koh/<branch>`:
+**Duplicate check first, not at conflict time.** A second Claude account works the same board; on 08-29 a whole wave was superseded by PRs the other account had merged five hours earlier.
+
+```bash
+gh pr list --search "<TICKET-ID>" --state all --json number,title,state,url
+```
+
+Any open or merged hit: stop and report before writing a line of code.
+
+**Already inside a supacode worktree?** If cwd is under `~/.supacode/repos/<repo>/<branch>/`, that IS your worktree. Confirm the branch matches the ticket and skip to Step 2 — never create a second worktree, never `cd` back to the parent checkout.
+
+Otherwise, from the main repo (not from inside another worktree). CLAUDE.md mandates `.koh/<branch>`:
 
 ```bash
 git fetch origin main
 git worktree list                    # check for prior worktree on same branch
 git worktree add .koh/<branch-name> -b <branch-name> origin/main
+git worktree lock .koh/<branch-name> # a commitless worktree gets swept by gwt-prune-merged
 cd .koh/<branch-name>
+cp ~/code/ritualpass/api/.env .env   # api only — gitignored, and without it every
+                                     # authenticated request 401s (no DEVISE_JWT_SECRET_KEY)
 ```
 
 - **Branch naming:** `<TICKET-ID>-<short-kebab-summary>`, under ~50 chars.
-- **Existing worktree for the same ticket with an open PR:** push to that branch, do not create a parallel one.
-- **Working directory is a merged worktree:** note it, do not auto-remove without user consent.
+- **Always branch off `origin/main`** unless this is a stacked epic (see below). Stacking off an unmerged branch is what produces the conflict pile-ups.
+- **Same ticket already has a worktree + open PR:** push to that branch, don't create a parallel one.
+- **Merged worktree:** note it, don't auto-remove without consent.
 
-Then: `linear issue start <TICKET-ID>` (best-effort).
+Then claim it with `linear-start <TICKET-ID>`. It runs `linear issue start`, forces the state to "In Progress" (the CLI lands tickets in "In Review"), verifies it stuck, and prints the suggested branch name. Don't hand-correct the state any more.
 
 ## Step 2 — Get ticket context
 
@@ -102,48 +134,62 @@ linear issue show <TICKET-ID>
 
 Read the body, acceptance criteria, and any linked spec/plan docs (e.g. `docs/superpowers/plans/...`). If acceptance criteria are missing or scope is genuinely unclear, ask the user before writing code.
 
-## Step 3 — Plan carefully
+## Step 2b — Verify the premise
 
-This is the step most people skip. Don't. Before writing any code:
+**Before any implementer is briefed, reproduce the reported symptom at runtime. Two minutes, hard cap.** Hit the endpoint, load the route, run the one failing case. BLO-1499 and BLO-1503 each burned a full implement → review → PR cycle on a bug that did not exist: one was already fixed by an earlier ticket, the other only reproduced inside `ActionDispatch::IntegrationTest`.
+
+- **Reproduces:** record the exact command and output. It becomes the implementer's RED case.
+- **Doesn't reproduce inside two minutes:** stop. Report what you ran, what you saw, and what you think the ticket actually describes. Do not dispatch. A grep of the route directory is not a reproduction.
+- **Not reproducible by design** (infra, third-party state, production-only data): say so explicitly and name the evidence you used instead.
+
+**Ticket references an approved design or prototype?** Open that file and quote the exact spec, values and copy into the implementer's brief. Design records live in the `ritualpass/docs` repo under `design/<topic>/`. Paraphrasing an approved design from memory is what caused the BLO-1532 rework.
+
+## Step 3 — Plan carefully (yours, never delegated)
 
 1. **Identify the files you'll touch.** Read + Grep them, including callers of any symbols you're about to change.
 2. **Check existing patterns.** Match conventions of similar features (tests, error handling, naming).
 3. **Find load-bearing constraints** (fixture relationships, validation contexts, idempotency keys, multi-tenant scoping). Document any deviation from spec with a one-sentence "why".
 4. **Set up task tracking** with TaskCreate — one task per concrete deliverable, no speculative entries.
-5. **State the plan to the user** in 3–6 lines: scope, files, deviations. Then start.
+5. **State the plan to the user** in 3–6 lines: scope, files, deviations. Then start. This catches misdirections that would otherwise cost an hour of throwaway code.
 
-The plan summary catches misdirections that would otherwise cost an hour of throwaway code.
+Multi-task work: the `review-ledger` pre-flight plan scan (file collisions between parallel tasks, files that only exist on main, spec self-contradictions) is **mandatory before any parallel dispatch**.
 
-## Step 4 — TDD implementation
+## Step 4 — Implementation (one opus subagent per ticket)
 
-Per task: write the failing test → run it → confirm RED → implement minimum → re-run → confirm GREEN → mark completed.
+One agent per ticket; one agent per task when the work is genuinely multi-task and the plan scan cleared the collisions. Each brief carries:
 
-When you touch a service or model, run dependent tests too (don't let CI surface regressions).
+- **The absolute worktree path**, and an instruction to work only inside it (`git rev-parse --show-toplevel` when unsure).
+- The plan, the acceptance criteria, the quoted design spec, and the Step 2b reproduction as the RED case.
+- **TDD per task:** failing test → confirm RED → minimum implementation → confirm GREEN. Run dependent tests when a service or model is touched.
+- **Steps 5 and 6 below, verbatim:** pre-commit gates, then ONE logical commit per ticket with an **explicit pathspec on `git commit`**. No commits between tasks.
+- **Do not push.** Pushing is the coordinator's, in `pr-handover`.
+- **A `Co-Authored-By` trailer naming the model the agent actually runs on** — an opus implementer commits `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`. Never paste your own model's trailer into a brief; four implementers had to flag that on 09-12.
 
-**Do not commit between tasks.** One logical commit per ticket is the norm.
+When a report lands, **verify on disk, not on the claim**: `git -C <worktree> status --porcelain`, `git log --oneline`, `git show --stat HEAD`, and read the diff yourself. Then TaskStop the agent.
 
 ## Step 5 — Pre-commit checks
 
-1. **Full test suite** (or the smallest scope known to cover all affected code).
-2. **Lint** changed files (`bundle exec rubocop -f simple <files>`, `npm run lint`, `ruff`/`black --check`).
-3. **Read `git diff` once** — no debug prints, no stray files.
+1. **Full test suite** (or the smallest scope known to cover all affected code). Rails/api: `PARALLEL_WORKERS=1 bin/rails test` — the bare command segfaults the pg gem. CI runs fully parallel, so shared-tmpfile races surface only there.
+2. **Lint** changed files. Match the lockfile in that directory — `pnpm lint` where `pnpm-lock.yaml` exists, `npm run lint` where `package-lock.json` does, never mix the two. Ruby: `bundle exec rubocop -f simple <files>`. Python: `ruff` / `black --check`.
+3. **Read `git diff` once** — no debug prints, no stray files. You re-run all three yourself after the agent reports; an agent's green is not evidence.
 
 ## Step 6 — Commit
 
 ```bash
-git add <explicit-file-list>          # no `git add -A` / `git add .`
-git status                            # verify staged set
+git status --porcelain                # every staged path must be one you intend; an unexpected
+                                      # entry means a concurrent agent is mid-write — wait
 git commit -m "$(cat <<'EOF'
 <TICKET-ID>: <one-line summary, imperative mood>
 
 <2-4 paragraphs: WHAT changed and WHY. Note any spec deviation. Reference parent epic.>
 EOF
-)"
+)" -- <explicit-file-list>            # pathspec on the COMMIT, not just on `git add`
+git show --stat --oneline HEAD        # verify the commit's scope
 ```
 
-CLAUDE.md commit rules apply: no `--no-verify`, no force ops, never `-uall`, explicit file lists.
+**The pathspec belongs on `git commit`.** A bare `git add <files> && git commit` still commits the whole index, so a concurrent subagent's staged files land in your commit under your message — BLO-1140 had to be split apart with `git reset --soft`, and three branches shipped a stray `.gitignore` rider this way. No `--no-verify`, no force ops, never `-uall`.
 
-## Step 7 — Review (MANDATORY — see Hard Gate)
+## Step 7 — Review
 
 **Rebase first.** Other PRs may have landed:
 
@@ -153,71 +199,55 @@ git log --oneline HEAD..origin/main      # what landed since branch point?
 git rebase origin/main                   # if anything new
 ```
 
-Resolve conflicts deliberately — don't `--skip`. If risky, `--abort` and ask. Re-run tests after a clean rebase.
+Resolve conflicts deliberately — don't `--skip`. If risky, `--abort` and ask. Re-run tests after a clean rebase. **Capture the SHA**: `git rev-parse HEAD`.
 
-**Capture the SHA**: `git rev-parse HEAD`. You'll need it for the PR body and Step 8 precondition.
-
-**Run `/review`** via the Skill tool. It will detect scope drift, run a critical pass (SQL safety, races, enum completeness), dispatch specialists for meaty diffs, and run an adversarial pass (Claude + Codex if available).
+- **Single-diff work → run `/review`** via the Skill tool: scope drift, critical pass (SQL safety, races, enum completeness), specialists for meaty diffs, adversarial pass (Claude + Codex).
+- **Multi-task work → run the `review-ledger` skill.** It owns the per-task briefs, the per-task first review, the consolidated fix batch, the scoped re-review and the ruling log.
 
 Classify findings:
 
-- **AUTO-FIX** — mechanical fixes a senior engineer would apply without discussion (drop wasted eager load, tighten idempotency key, fix comment). Apply directly. Add tests where non-trivial.
+- **AUTO-FIX** — mechanical fixes a senior engineer would apply without discussion (wasted eager load, idempotency key, comment). Apply directly; add tests where non-trivial.
 - **ASK** — design decisions, user-visible behavior, scope changes. Batch into one AskUserQuestion with a recommendation.
-- **Out of scope** — note in PR body's "Out of scope" section; don't expand the diff.
+- **Out of scope** — note in the PR body; don't expand the diff.
 
-After fixes: re-run affected tests + full suite, re-run lint, **commit review fixes as a separate commit** so the diff reads as "implementation" then "review fixes". If you commit after `/review`, either re-run it against the new HEAD or be explicit in the PR body that the second commit was just the auto-fix batch from the recorded SHA.
+**Consolidate every review pass into ONE fix batch.** Never trickle fixes reviewer by reviewer. Commit the batch separately so the diff reads "implementation" then "review fixes", then **delta-review the fix commit as new code** — a scoped pass that confirms each named finding is actually closed and hunts for breakage the fix introduced. Re-run affected tests + full suite + lint.
 
-**Zero findings is a valid outcome** — record it as `0 findings`. The gate enforces that review *ran*, not that it always finds bugs.
+**Stop condition:** once a round returns only prose or polish, freeze the branch and file the remainder as tickets. BLO-1486 took 10 commits and five declared "freezes"; the last two rounds produced no product.
 
-## Step 8 — Push and open PR
+**Zero findings is a valid outcome** — record `0 findings`. The gate enforces that review *ran*.
 
-**Precondition:** can you state "`/review` ran on SHA `<x>`, N findings addressed (or 0 findings)"? If not, go back to Step 7. Do not push.
+## Steps 8–9 — Run the `pr-handover` skill
 
-```bash
-git push -u origin <branch-name>
-gh pr create --title "<TICKET-ID>: <one-line summary>" --body "$(cat <<'EOF'
-## Summary
+Don't hand-roll screenshots, push, `gh pr create` and CI polling any more. `pr-handover` verifies HEAD on disk, re-runs the gates, rebases on `origin/main`, re-checks for a duplicate PR, dispatches a `capture-pairs` agent when the diff is user-visible, builds the gallery with `rp-gallery`, publishes it as an Artifact (or writes "No user-visible surface (API only)"), pushes, opens the PR from the template with the `/review ran on <SHA>` line, inserts the gallery link with `pr-append-section` (never `gh pr edit`), waits on `pr-ci-wait` in the background, verifies `mergeable`, comments the PR and gallery URLs on the Linear ticket, republishes the gallery with the PR backlink, arms the merge watch per `wave` §2, and only then emits "review clean, CI green, ready to merge — want me to?". It refuses to say "ready" while a gallery link, green CI, `mergeable=MERGEABLE` or the review SHA line is missing.
 
-<2-4 sentences: what this PR does + which epic it's part of>
+After a merge, `wave` §3 owns the rest: fetch, rebase every open wave-mate, start the next ticket, post the rollup.
 
-Fixes <TICKET-ID>.
+## Stacked epics
 
-## What changes
+When a ticket genuinely depends on an unmerged PR (an epic shipped in ordered slices), stack deliberately rather than pretending it's independent:
 
-- Bullet list of meaningful changes. Skip noise.
-- Note any spec deviation with reason.
-
-## Out of scope
-
-- Items deferred to later phases (link tickets).
-- Items flagged in review but accepted as design decisions.
-
-## Test plan
-
-- [x] <test runner invocation + result, e.g. "49 runs, 143 assertions, 0 failures">
-- [x] Full suite passes
-- [x] Lint clean
-- [x] /review ran on <SHA> — <N findings, all addressed | 0 findings>
-- [ ] After merge: manual verification on staging
-EOF
-)"
-```
-
-Use `Fixes <TICKET-ID>` so Linear auto-closes the ticket on merge. Return the PR URL.
+- Branch off the previous PR's branch, not `origin/main`, and say so in the plan summary.
+- Open with `gh pr create --base <previous-branch>` so the diff shows only this slice.
+- **When the base merges, cascade immediately:** `git fetch origin main`, retarget with `gh api -X PATCH .../pulls/<N> -F base=main`, rebase onto the new `origin/main`, re-run the suite, force-push with lease, re-verify CI. Do this the moment the merge is detected, not when the conflicts surface.
+- Serialize, don't parallelize, a stack. Two agents on adjacent slices is the top conflict source.
 
 ## What NOT to do
 
-- **Do NOT skip `/review`.** Ever. Not for small diffs, "obvious" deletions, refactors, or typo fixes. If you're rationalizing "this one doesn't need it" — that is exactly when to run it. The Hard Gate is non-negotiable.
-- **Do NOT push or `gh pr create` before `/review` has run and findings are addressed.** This bug shipped twice in past sessions; both times review would have caught a real regression.
-- **Do NOT reuse a branch from a previous PR.** New ticket = new worktree off latest `origin/main`.
+- **Do NOT skip the review gate, or push before it has run.** See the Hard Gate. If you're rationalizing "this one doesn't need it", that is exactly when to run it.
+- **Do NOT add labels.** There is no label-triggered deploy — `deploy.yml` was deleted (BLO-1407), `staged` triggers nothing, and staging tracks `main`. Labels that deploy or publish need explicit current-wave permission anyway.
+- **Do NOT use `gh pr edit`.** It reports success and silently discards body, title and label edits. Use `pr-append-section`, or `gh api -X PATCH .../pulls/<N> -F body=@<file>` and read the live body back.
+- **Do NOT run a foreground `sleep` or a hand-rolled `for i in $(seq …); do sleep 60; gh pr checks` loop.** `pr-ci-wait` in the background, or Monitor with an until-loop.
+- **Do NOT Read a PNG.** Capture agents open images and return a verdict plus paths; you build the gallery from paths.
 - **Do NOT commit until implementation and tests pass.** Half-done commits pollute the diff.
 - **Do NOT skip the plan summary** even when the ticket seems trivial.
-- **Do NOT auto-merge or auto-deploy.** Leave the PR for the user.
+- **Do NOT auto-merge or auto-deploy.** Merge authorization is per-wave and never carries forward.
 - **Do NOT silently expand scope.** Out-of-scope items go in the PR description.
 
 ## End state
 
-1. A green PR linked to the Linear ticket.
-2. Either two commits (implementation + review fixes) or one commit with `/review ran on <SHA> — 0 findings` in the PR body. A single-commit PR without that line means the gate was skipped.
-3. Linear ticket auto-moved to "In Review".
-4. PR URL printed in the chat.
+1. A green PR linked to the Linear ticket, mergeable against current `main`, its full URL printed in the chat.
+2. Either two commits (implementation + review fixes) or one commit carrying `/review ran on <SHA> — 0 findings`.
+3. UI PRs: a `## Screenshots` section whose first line is the gallery Artifact URL, and the gallery carrying the PR backlink. API-only PRs: the explicit "No user-visible surface" line.
+4. A Linear comment on the ticket carrying the PR URL and the gallery URL, ticket in "In Review".
+5. The merge watch armed, so the user never has to announce the merge.
+6. Worktree left in place and locked — the PR is unmerged. Once it lands, clean up with `gwt-prune-merged` (dry run first, `--force` only on confirmation); `git worktree prune` and `git branch --merged` both misreport squash-merged branches.

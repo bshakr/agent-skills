@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""rp-gallery — build a self-contained before/after screenshot gallery from a manifest.
+
+  rp-gallery <manifest.json> --out <gallery.html> [--max-mb 15]
+
+Exit codes: 0 built, 1 could not get under --max-mb, 2 manifest invalid or an
+image file is missing, 64 usage error.
+
+The output is ONE HTML file with every image inlined as a data URI and no
+external resource of any kind, so it opens from disk and publishes as an
+Artifact unchanged. The script cannot publish; the coordinator passes the file
+to the Artifact tool, and re-runs this with an updated manifest (PR link filled
+in) to republish to the same URL.
+
+Manifest shape:
+  {"title": "...", "pr_url": "...", "ticket_url": "...", "intro": "...",
+   "pairs": [{"label","route","state","viewport","before","after","note","identical"}],
+   "solos": [{"label","route","state","viewport","path","note"}]}
+
+Image paths are resolved relative to the manifest file. Pillow is used when
+available (PNG -> JPEG q85, progressive downscale until the file fits the cap);
+without it images are embedded as-is and an oversized gallery fails loudly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import html
+import json
+import os
+import sys
+from pathlib import Path
+
+PROG = "rp-gallery"
+EXIT_OK, EXIT_TOO_BIG, EXIT_BAD_MANIFEST, EXIT_USAGE = 0, 1, 2, 64
+
+try:
+    from PIL import Image
+
+    HAVE_PIL = True
+except Exception:  # pragma: no cover - Pillow is optional by design
+    Image = None  # type: ignore[assignment]
+    HAVE_PIL = False
+
+# (scale, jpeg quality) tried in order until the whole page fits under the cap.
+LADDER = [
+    (1.00, 85),
+    (1.00, 78),
+    (0.85, 80),
+    (0.70, 80),
+    (0.60, 75),
+    (0.50, 75),
+    (0.40, 70),
+    (0.30, 65),
+    (0.25, 60),
+]
+
+MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+}
+
+
+def err(msg: str) -> None:
+    print(f"{PROG}: {msg}", file=sys.stderr)
+
+
+def die(msg: str, code: int) -> "NoReturn":  # type: ignore[name-defined]
+    err(msg)
+    raise SystemExit(code)
+
+
+# --------------------------------------------------------------------------
+# manifest
+# --------------------------------------------------------------------------
+def load_manifest(path: Path) -> dict:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        die(f"cannot read manifest: {exc}", EXIT_BAD_MANIFEST)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        die(f"manifest is not valid JSON: {exc}", EXIT_BAD_MANIFEST)
+    if not isinstance(data, dict):
+        die("manifest must be a JSON object", EXIT_BAD_MANIFEST)
+    return data
+
+
+def validate(data: dict, base: Path) -> tuple[list[dict], list[dict]]:
+    problems: list[str] = []
+
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip():
+        problems.append('"title" is required and must be a non-empty string')
+
+    for key in ("pairs", "solos"):
+        if key in data and not isinstance(data[key], list):
+            problems.append(f'"{key}" must be a list')
+
+    pairs = data.get("pairs") or []
+    solos = data.get("solos") or []
+    if isinstance(pairs, list) and isinstance(solos, list) and not pairs and not solos:
+        problems.append('manifest has neither "pairs" nor "solos"; nothing to render')
+
+    missing: list[str] = []
+
+    def check_image(where: str, value, resolved: list) -> None:
+        if not isinstance(value, str) or not value.strip():
+            problems.append(f"{where}: image path is missing or not a string")
+            return
+        p = Path(value)
+        full = p if p.is_absolute() else (base / p)
+        if not full.is_file():
+            missing.append(f"{where}: {full}")
+            return
+        resolved.append(full)
+
+    if isinstance(pairs, list):
+        for i, pair in enumerate(pairs):
+            where = f"pairs[{i}]"
+            if not isinstance(pair, dict):
+                problems.append(f"{where} must be an object")
+                continue
+            if not str(pair.get("label", "")).strip():
+                problems.append(f'{where}: "label" is required')
+            got: list = []
+            check_image(f"{where}.before", pair.get("before"), got)
+            check_image(f"{where}.after", pair.get("after"), got)
+
+    if isinstance(solos, list):
+        for i, solo in enumerate(solos):
+            where = f"solos[{i}]"
+            if not isinstance(solo, dict):
+                problems.append(f"{where} must be an object")
+                continue
+            if not str(solo.get("label", "")).strip():
+                problems.append(f'{where}: "label" is required')
+            got = []
+            check_image(f"{where}.path", solo.get("path"), got)
+
+    if missing:
+        err(f"{len(missing)} image file(s) named in the manifest do not exist:")
+        for m in missing:
+            err(f"    {m}")
+        err(f"(paths are resolved relative to {base})")
+    for p in problems:
+        err(p)
+    if missing or problems:
+        raise SystemExit(EXIT_BAD_MANIFEST)
+
+    return pairs, solos
+
+
+def resolve(base: Path, value: str) -> Path:
+    p = Path(value)
+    return p if p.is_absolute() else (base / p)
+
+
+# --------------------------------------------------------------------------
+# image encoding
+# --------------------------------------------------------------------------
+class Encoded:
+    __slots__ = ("label", "path", "mime", "b64", "raw_bytes", "out_bytes", "width", "height")
+
+    def __init__(self, label: str, path: Path, mime: str, b64: str, raw: int, out: int, w: int, h: int):
+        self.label, self.path, self.mime, self.b64 = label, path, mime, b64
+        self.raw_bytes, self.out_bytes, self.width, self.height = raw, out, w, h
+
+    @property
+    def data_uri(self) -> str:
+        return f"data:{self.mime};base64,{self.b64}"
+
+
+def encode(label: str, path: Path, scale: float, quality: int) -> Encoded:
+    raw = path.stat().st_size
+    if not HAVE_PIL:
+        data = path.read_bytes()
+        mime = MIME.get(path.suffix.lower(), "application/octet-stream")
+        return Encoded(label, path, mime, base64.b64encode(data).decode("ascii"), raw, len(data), 0, 0)
+
+    import io
+
+    with Image.open(path) as im:
+        im.load()
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            flat = Image.new("RGB", im.size, (255, 255, 255))
+            flat.paste(im, mask=im.split()[-1])
+            im = flat
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        if scale < 1.0:
+            w = max(1, int(im.width * scale))
+            h = max(1, int(im.height * scale))
+            im = im.resize((w, h), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
+        data = buf.getvalue()
+        return Encoded(label, path, "image/jpeg", base64.b64encode(data).decode("ascii"), raw, len(data), im.width, im.height)
+
+
+# --------------------------------------------------------------------------
+# rendering
+# --------------------------------------------------------------------------
+CSS = """
+:root{
+  --bg:#F6F4FB; --surface:#FFFFFF; --ink:#241B38; --muted:#6B6084; --line:#E2DCF0;
+  --accent:#5B34C8; --accent-soft:#EAE3FF; --ok-bg:#DFF3E6; --ok-ink:#1E6B3E;
+  --code-bg:#EFEBFA; --shadow:0 1px 0 rgba(36,27,56,.05),0 10px 28px -20px rgba(36,27,56,.45);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#141024; --surface:#1E1834; --ink:#F0ECFB; --muted:#A99DC6; --line:#332A52;
+    --accent:#BDA6FF; --accent-soft:#2F2455; --ok-bg:#20452F; --ok-ink:#8FE0AC;
+    --code-bg:#1A1430; --shadow:0 1px 0 rgba(0,0,0,.25),0 10px 28px -20px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141024; --surface:#1E1834; --ink:#F0ECFB; --muted:#A99DC6; --line:#332A52;
+  --accent:#BDA6FF; --accent-soft:#2F2455; --ok-bg:#20452F; --ok-ink:#8FE0AC;
+  --code-bg:#1A1430; --shadow:0 1px 0 rgba(0,0,0,.25),0 10px 28px -20px rgba(0,0,0,.8);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:16px;line-height:1.55;padding-block:0 72px;padding-inline:clamp(16px,4vw,44px)}
+a{color:var(--accent)}
+h1,h2{font-weight:650;line-height:1.15;margin:0;text-wrap:balance}
+h1{font-size:clamp(26px,4.2vw,40px)}
+h2{font-size:20px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85em;
+  background:var(--code-bg);padding:1px 6px;border-radius:6px}
+.masthead{display:flex;flex-direction:column;gap:14px;padding-block:44px 26px;border-bottom:1px solid var(--line)}
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.links{display:flex;flex-wrap:wrap;gap:10px;margin:0;padding:0;list-style:none}
+.links a,.links span{display:inline-block;max-width:100%;word-break:break-all;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;font-weight:600;
+  background:var(--accent-soft);color:var(--accent);padding:9px 14px;border-radius:12px;text-decoration:none}
+.links a:hover{text-decoration:underline}
+.links span{opacity:.72;color:var(--muted);background:var(--code-bg)}
+.intro{margin:0;color:var(--muted);max-width:72ch}
+.item{padding-block:34px 10px;border-bottom:1px solid var(--line)}
+.item header{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 16px;margin:0;color:var(--muted);font-size:14px}
+.note{margin:0;max-width:72ch}
+.badge{align-self:flex-start;background:var(--ok-bg);color:var(--ok-ink);font-size:13px;font-weight:700;
+  padding:4px 11px;border-radius:999px}
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:18px;align-items:start}
+.shots.solo{grid-template-columns:minmax(0,1fr);max-width:760px}
+figure{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:12px;
+  box-shadow:var(--shadow);min-width:0}
+figcaption{font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 9px}
+figure.after figcaption{color:var(--accent)}
+img{display:block;max-width:100%;height:auto;border-radius:9px;border:1px solid var(--line)}
+.foot{margin-top:34px;color:var(--muted);font-size:13px}
+"""
+
+
+def esc(value) -> str:
+    return html.escape("" if value is None else str(value))
+
+
+def meta_line(item: dict) -> str:
+    bits = []
+    if str(item.get("route", "")).strip():
+        bits.append(f"<span>route <code>{esc(item['route'])}</code></span>")
+    if str(item.get("state", "")).strip():
+        bits.append(f"<span>state: {esc(item['state'])}</span>")
+    if str(item.get("viewport", "")).strip():
+        bits.append(f"<span>viewport {esc(item['viewport'])}</span>")
+    return f'<p class="meta">{"".join(bits)}</p>' if bits else ""
+
+
+def figure(caption: str, enc: Encoded, alt: str, cls: str = "") -> str:
+    klass = f' class="{cls}"' if cls else ""
+    return (
+        f"<figure{klass}><figcaption>{esc(caption)}</figcaption>"
+        f'<img src="{enc.data_uri}" alt="{esc(alt)}" loading="lazy"></figure>'
+    )
+
+
+def render(data: dict, pairs: list[dict], solos: list[dict], enc: dict[str, Encoded]) -> str:
+    title = str(data["title"]).strip()
+    pr_url = str(data.get("pr_url") or "").strip()
+    ticket_url = str(data.get("ticket_url") or "").strip()
+    intro = str(data.get("intro") or "").strip()
+
+    links = []
+    if pr_url:
+        links.append(f'<li><a href="{esc(pr_url)}">PR: {esc(pr_url)}</a></li>')
+    else:
+        links.append("<li><span>PR: pending</span></li>")
+    if ticket_url:
+        links.append(f'<li><a href="{esc(ticket_url)}">Ticket: {esc(ticket_url)}</a></li>')
+
+    body = [
+        f"<title>{esc(title)}</title>",
+        f"<style>{CSS}</style>",
+        '<header class="masthead">',
+        '<span class="eyebrow">Before and after</span>',
+        f"<h1>{esc(title)}</h1>",
+        f'<ul class="links">{"".join(links)}</ul>',
+    ]
+    if intro:
+        body.append(f'<p class="intro">{esc(intro)}</p>')
+    body.append("</header>")
+
+    for i, pair in enumerate(pairs):
+        before = enc[f"pairs[{i}].before"]
+        after = enc[f"pairs[{i}].after"]
+        label = str(pair.get("label", "")).strip()
+        body.append('<section class="item">')
+        body.append("<header>")
+        body.append(f"<h2>{esc(label)}</h2>")
+        body.append(meta_line(pair))
+        if pair.get("identical") is True:
+            body.append('<span class="badge">byte-identical, no change</span>')
+        if str(pair.get("note", "")).strip():
+            body.append(f'<p class="note">What to look for: {esc(pair["note"])}</p>')
+        body.append("</header>")
+        body.append('<div class="shots">')
+        body.append(figure("Before (main)", before, f"{label}, before"))
+        body.append(figure("After (branch)", after, f"{label}, after", cls="after"))
+        body.append("</div></section>")
+
+    for i, solo in enumerate(solos):
+        shot = enc[f"solos[{i}].path"]
+        label = str(solo.get("label", "")).strip()
+        body.append('<section class="item">')
+        body.append("<header>")
+        body.append(f"<h2>{esc(label)}</h2>")
+        body.append(meta_line(solo))
+        if str(solo.get("note", "")).strip():
+            body.append(f'<p class="note">What to look for: {esc(solo["note"])}</p>')
+        body.append("</header>")
+        body.append('<div class="shots solo">')
+        body.append(figure("New surface (branch)", shot, label, cls="after"))
+        body.append("</div></section>")
+
+    body.append(
+        '<p class="foot">Self-contained: every image is embedded, nothing is fetched from the network.</p>'
+    )
+    return "\n".join(part for part in body if part)
+
+
+# --------------------------------------------------------------------------
+
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error; this tool reserves 2, so use 64."""
+
+    def error(self, message):  # noqa: D401
+        self.print_usage(sys.stderr)
+        err(message)
+        raise SystemExit(64)
+
+def main() -> int:
+    ap = _Parser(prog=PROG, description="Build a self-contained before/after gallery.")
+    ap.add_argument("manifest", help="path to manifest.json")
+    ap.add_argument("--out", required=True, help="output HTML file")
+    ap.add_argument("--max-mb", type=float, default=15.0, help="size cap for the HTML file (default 15)")
+    args = ap.parse_args()
+
+    if args.max_mb <= 0:
+        die("--max-mb must be positive", EXIT_USAGE)
+
+    manifest_path = Path(args.manifest).expanduser()
+    data = load_manifest(manifest_path)
+    base = manifest_path.resolve().parent
+    pairs, solos = validate(data, base)
+
+    targets: list[tuple[str, str, Path]] = []
+    for i, pair in enumerate(pairs):
+        label = str(pair.get("label", "")).strip()
+        targets.append((f"pairs[{i}].before", f"{label} / before", resolve(base, pair["before"])))
+        targets.append((f"pairs[{i}].after", f"{label} / after", resolve(base, pair["after"])))
+    for i, solo in enumerate(solos):
+        label = str(solo.get("label", "")).strip()
+        targets.append((f"solos[{i}].path", f"{label} / solo", resolve(base, solo["path"])))
+
+    cap = int(args.max_mb * 1024 * 1024)
+    if not HAVE_PIL:
+        err("Pillow not installed: embedding images as-is, no JPEG conversion and no downscaling.")
+
+    chosen = None
+    page = ""
+    encoded: dict[str, Encoded] = {}
+    for scale, quality in LADDER:
+        encoded = {key: encode(label, path, scale, quality) for key, label, path in targets}
+        page = render(data, pairs, solos, encoded)
+        size = len(page.encode("utf-8"))
+        chosen = (scale, quality, size)
+        if size <= cap:
+            break
+        how = "shrinking" if HAVE_PIL else "and there is no Pillow to shrink it"
+        print(
+            f"{PROG}: {size / 1048576:.2f} MB at scale {scale:.2f} q{quality} "
+            f"exceeds the {args.max_mb:g} MB cap, {how}",
+            file=sys.stderr,
+        )
+        if not HAVE_PIL:
+            break
+
+    assert chosen is not None
+    scale, quality, size = chosen
+
+    if size > cap:
+        err(f"cannot fit under {args.max_mb:g} MB (smallest attempt was {size / 1048576:.2f} MB).")
+        if not HAVE_PIL:
+            err("install Pillow (pip install Pillow) to enable JPEG conversion and downscaling.")
+        else:
+            err("drop some pairs, crop the screenshots, or raise --max-mb.")
+        return EXIT_TOO_BIG
+
+    out = Path(args.out).expanduser()
+    if out.parent and not out.parent.exists():
+        os.makedirs(out.parent, exist_ok=True)
+    out.write_text(page, encoding="utf-8")
+
+    # Summary of what got embedded.
+    print(f"{PROG}: wrote {out}")
+    print(f"  encoder      : {'Pillow JPEG q' + str(quality) if HAVE_PIL else 'raw passthrough (no Pillow)'}  scale {scale:.2f}")
+    print(f"  images       : {len(encoded)}")
+    print(f"  page size    : {size / 1048576:.2f} MB (cap {args.max_mb:g} MB)")
+    print("  embedded sizes:")
+    for key, _label, _path in targets:
+        e = encoded[key]
+        dims = f"{e.width}x{e.height}" if e.width else "unknown"
+        print(
+            f"    {e.label:<44} {e.raw_bytes / 1024:8.1f} KB -> {e.out_bytes / 1024:8.1f} KB  {dims:>11}  {e.path.name}"
+        )
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

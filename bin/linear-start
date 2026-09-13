@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# linear-start — move a Linear ticket to "In Progress" and prove it stuck.
+#
+#   linear-start <TICKET-ID>        e.g. linear-start BLO-1671
+#
+# Exit codes: 0 ticket is In Progress, 1 the state did not stick (or the CLI
+# failed), 3 ticket not found, 4 Linear CLI unauthenticated, 64 usage error.
+#
+# Why this exists (retro 2026-09-13): `linear issue start` picks the first
+# workflow state of type "started", which in the BLO workspace is "In Review",
+# so every ship-ticket run began by silently mislabelling the ticket and it was
+# corrected by hand twice (report b05 section 4). This forces the state and then
+# reads it back, because a status code is not the payload.
+
+set -euo pipefail
+
+PROG=${0##*/}
+
+usage() {
+	cat >&2 <<'USAGE'
+usage: linear-start <TICKET-ID>
+
+Runs `linear issue start`, forces the state to "In Progress", verifies it with
+`linear issue show`, and prints the branch name `linear branch` would use.
+
+exit 0 In Progress | 1 state did not stick | 3 ticket not found | 4 not logged in
+USAGE
+}
+
+die() {
+	printf '%s: %s\n' "$PROG" "$1" >&2
+	exit "${2:-64}"
+}
+
+case "${1:-}" in
+"")
+	usage
+	exit 64
+	;;
+-h | --help)
+	usage
+	exit 0
+	;;
+-*) die "unknown flag: $1" ;;
+esac
+
+[ $# -eq 1 ] || die "expected exactly one ticket id, got $#"
+ID=$1
+
+command -v linear >/dev/null 2>&1 || die "linear is not on PATH (npm i -g @dabble/linear-cli)" 4
+
+# Strip ANSI colour so the parsed lines are plain text.
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+# --- auth ------------------------------------------------------------------
+if ! who=$(linear whoami 2>&1); then
+	printf '%s: the Linear CLI is not authenticated.\n' "$PROG" >&2
+	printf '%s\n' "$who" | sed 's/^/    /' >&2
+	printf '  Run: linear login\n' >&2
+	exit 4
+fi
+printf '%s: %s\n' "$PROG" "$(printf '%s\n' "$who" | strip_ansi | head -1)" >&2
+
+# --- the ticket must exist before we try to move it ------------------------
+if ! before=$(linear issue show "$ID" 2>&1); then
+	printf '%s: ticket %s not found.\n' "$PROG" "$ID" >&2
+	printf '%s\n' "$before" | strip_ansi | sed 's/^/    /' | head -5 >&2
+	exit 3
+fi
+
+title=$(printf '%s\n' "$before" | strip_ansi | sed -n "s/^# *${ID}: *//p" | head -1)
+was=$(printf '%s\n' "$before" | strip_ansi | sed -n 's/^State: *//p' | head -1)
+printf '%s: %s — %s (state was: %s)\n' "$PROG" "$ID" "${title:-untitled}" "${was:-unknown}" >&2
+
+# --- start, then force the state ------------------------------------------
+if ! out=$(linear issue start "$ID" 2>&1); then
+	printf '%s: linear issue start %s failed.\n' "$PROG" "$ID" >&2
+	printf '%s\n' "$out" | strip_ansi | sed 's/^/    /' >&2
+	exit 1
+fi
+
+if ! out=$(linear issue update "$ID" --state "In Progress" 2>&1); then
+	printf '%s: linear issue update %s --state In Progress failed.\n' "$PROG" "$ID" >&2
+	printf '%s\n' "$out" | strip_ansi | sed 's/^/    /' >&2
+	exit 1
+fi
+
+# --- verify the payload, not the status code -------------------------------
+if ! after=$(linear issue show "$ID" 2>&1); then
+	die "could not re-read $ID to verify the state" 1
+fi
+now=$(printf '%s\n' "$after" | strip_ansi | sed -n 's/^State: *//p' | head -1)
+
+if [ "$now" != "In Progress" ]; then
+	printf '%s: state did not stick — %s is "%s", expected "In Progress".\n' "$PROG" "$ID" "${now:-unreadable}" >&2
+	printf '  Check the workspace state names: linear issues --state "In Progress"\n' >&2
+	exit 1
+fi
+
+# --- branch name -----------------------------------------------------------
+# NOTE: `linear branch <id>` runs `git checkout -b` in the current repo. That is
+# a side effect this script must not have (ship-ticket creates a worktree from
+# origin/main instead), so the name is derived with the CLI's slug rule:
+# lowercase, non-alphanumeric runs to dashes, trimmed, first 50 chars
+# (plus a trailing-dash trim, so the branch name never ends in a dash).
+slug=$(printf '%s' "${title:-}" |
+	tr '[:upper:]' '[:lower:]' |
+	sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-*//; s/-*$//' |
+	cut -c1-50 |
+	sed 's/-*$//')
+branch="$ID${slug:+-$slug}"
+
+printf '%s: %s is now In Progress\n' "$PROG" "$ID" >&2
+printf '%s\n' "$branch"
+printf '  worktree: git fetch origin main && git worktree add .koh/%s -b %s origin/main\n' "$branch" "$branch" >&2
+exit 0
