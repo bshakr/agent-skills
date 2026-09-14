@@ -169,8 +169,16 @@ check "inside a subagent -> allow" allow \
 STUB_DIR=$(mktemp -d)
 TRANSCRIPT="$STUB_DIR/sess.jsonl"
 cat > "$TRANSCRIPT" <<'JSONL'
-{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title x --body y"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","content":"https://github.com/bshakr/houserota/pull/28"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"peer says https://github.com/bshakr/rota/pull/45 has conflicts"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_create1","name":"Bash","input":{"command":"gh pr create --title x --body y"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_create1","content":"https://github.com/bshakr/houserota/pull/28"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"see also https://github.com/bshakr/rota/pull/99 (not ours)"}]}}
+JSONL
+# A transcript that only MENTIONS PR URLs (peer message, pasted link) owns no PR.
+MENTION_TP="$STUB_DIR/mention.jsonl"
+cat > "$MENTION_TP" <<'JSONL'
+{"type":"user","message":{"content":[{"type":"text","text":"PR https://github.com/bshakr/rota/pull/45 has conflicts, rebase on origin/main"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"the skill runs gh pr create later; https://github.com/bshakr/rota/pull/45"}]}}
 JSONL
 printf '#!/usr/bin/env bash\ncat "$GH_STUB_PAYLOAD"\n' > "$STUB_DIR/gh"
 chmod +x "$STUB_DIR/gh"
@@ -194,6 +202,11 @@ stop_case "merged PR -> allow" allow \
   '{"state":"MERGED","mergeStateStatus":"UNKNOWN","statusCheckRollup":[],"files":[{"path":"apps/web/x.tsx"}],"body":""}'
 stop_case "green non-UI PR -> allow" allow \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"app/models/shift.rb"}],"body":"Summary"}'
+# The stub returns a conflicted PR for ANY url; a mention-only transcript must never query it.
+printf '%s' '{"state":"OPEN","mergeStateStatus":"DIRTY","statusCheckRollup":[],"files":[],"body":""}' > "$STUB_DIR/payload.json"
+check "PR only mentioned by a peer, not created here -> allow" allow \
+  "$(PATH="$STUB_DIR:$PATH" GH_STUB_PAYLOAD="$STUB_DIR/payload.json" \
+    decision stop-check.sh "$(stop_payload "$MENTION_TP" false)")"
 rm -rf "$STUB_DIR"
 
 echo

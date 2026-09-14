@@ -30,18 +30,40 @@ if not transcript or not os.path.isfile(transcript):
 
 PR_RE = re.compile(r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+")
 
+# Only PRs this session created: a Bash tool_use whose command runs `gh pr create`,
+# and the PR URL taken from THAT call's tool_result. A PR URL merely mentioned in
+# the transcript (a peer's message, a retro report, a pasted link) is not ours.
 urls = []
-seen_create = False
+create_ids = set()
+CREATE_RE = re.compile(r"(?:^|[;&|(]\s*|\n\s*)gh\s+pr\s+create\b")
 try:
     with open(transcript, "r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
-            if not seen_create:
-                if "gh pr create" in line:
-                    seen_create = True
+            if "gh pr create" not in line and "tool_result" not in line:
                 continue
-            for match in PR_RE.findall(line):
-                if match not in urls:
-                    urls.append(match)
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            content = ((entry.get("message") or {}).get("content")) or []
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("name") == "Bash":
+                    cmd = str((block.get("input") or {}).get("command") or "")
+                    if CREATE_RE.search(cmd):
+                        create_ids.add(block.get("id"))
+                elif (
+                    block.get("type") == "tool_result"
+                    and block.get("tool_use_id") in create_ids
+                ):
+                    raw = block.get("content")
+                    text = raw if isinstance(raw, str) else json.dumps(raw)
+                    for match in PR_RE.findall(text):
+                        if match not in urls:
+                            urls.append(match)
 except Exception as exc:
     sys.stderr.write("stop-check.sh: transcript unreadable (%s)\n" % exc)
     sys.exit(0)
