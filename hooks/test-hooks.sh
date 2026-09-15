@@ -196,6 +196,10 @@ stop_case "open PR, UI diff, no gallery -> block" block \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"Summary"}'
 stop_case "open PR, UI diff, gallery linked -> allow" allow \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"See https://claude.ai/code/artifact/abc"}'
+stop_case "UI files deleted, no gallery -> allow" allow \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx","additions":0,"deletions":40}],"body":"Summary"}'
+stop_case "UI file with additions, no gallery -> block" block \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx","additions":12,"deletions":3}],"body":"Summary"}'
 stop_case "open PR, conflicts -> block" block \
   '{"state":"OPEN","mergeStateStatus":"DIRTY","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"README.md"}],"body":"Summary"}'
 stop_case "merged PR -> allow" allow \

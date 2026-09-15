@@ -134,10 +134,12 @@ for url in urls:
             "handing over." % (url, "failing" if failing else "pending")
         )
 
+    # a file that gained no lines was deleted or only lost code: nothing new
+    # to screenshot. additions missing (older gh) still counts as a UI change.
     paths = [
         f.get("path") or ""
         for f in (pr.get("files") or [])
-        if isinstance(f, dict)
+        if isinstance(f, dict) and f.get("additions") != 0
     ]
     touches_ui = any(
         UI_DIR_RE.search("/" + p) or UI_EXT_RE.search(p) for p in paths
