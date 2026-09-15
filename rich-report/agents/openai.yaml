@@ -1,4 +1,0 @@
-interface:
-  display_name: Rich Report
-  short_description: Turn plans and summaries into polished local webpages
-  default_prompt: Use $rich-report to turn this completed document into a polished local webpage that keeps the full source.
