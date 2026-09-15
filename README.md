@@ -16,7 +16,6 @@ Repository: https://github.com/bshakr/agent-skills
 | [`design-directions`](./design-directions) | 1.0.0 | Run the direction round before any visible surface is built: a brand director writes N divergent directions with a differentiation test, a design director writes craft rules plus one art-direction sheet per direction, one builder per lane sees only its own sheet, independent 12-check QA returns FIX FIRST or SHIP TO FOUNDER, then a live preview per direction inside one gallery, the design record, and the pick. |
 | [`capture-pairs`](./capture-pairs) | 1.0.0 | Before/after screenshot capture run by a capture subagent: detached worktree at the true fork point, private ports, injected sessions, per-shot route/theme assertions, phone overflow probe, fixture restore, rp-gallery manifest + VERDICT. Per-project appendices. |
 | [`test-plan-builder`](./test-plan-builder) | 1.0.1 | Build a code-grounded, multi-tab QA test plan for a feature spanning one or more repos — fans out parallel research subagents per repo/layer, reconciles what's actually implemented vs the spec, and outputs a formatted spreadsheet. |
-| [`rich-report`](./rich-report) | 1.0.0 | Turn a completed Markdown plan, summary, or report into a polished local web page — an editorial layer of highlights, timelines, risks, and mermaid diagrams over the full source. Reports are added to a single hub at `~/.rich-report` that serves them all from one long-running server on port 4400 with an index grouped by project. The agent authors one MDX file per report; dependencies install once for the hub. |
 
 ## Scripts
 
@@ -73,14 +72,13 @@ ln -s ~/code/agent-skills/pr-handover ~/.claude/skills/pr-handover
 ln -s ~/code/agent-skills/capture-pairs ~/.claude/skills/capture-pairs
 ln -s ~/code/agent-skills/design-directions ~/.claude/skills/design-directions
 ln -s ~/code/agent-skills/test-plan-builder ~/.claude/skills/test-plan-builder
-ln -s ~/code/agent-skills/rich-report ~/.claude/skills/rich-report
 ```
 
 Or into Codex:
 
 ```bash
 mkdir -p ~/.codex/skills
-ln -s ~/code/agent-skills/rich-report ~/.codex/skills/rich-report
+ln -s ~/code/agent-skills/<skill> ~/.codex/skills/<skill>
 ```
 
 Symlinks mean `git pull` instantly updates the live skill. Restart the agent session afterwards so its skill index reloads.
