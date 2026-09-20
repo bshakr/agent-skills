@@ -4,9 +4,9 @@
 # Enforces Bass's subagent policy mechanically:
 #   1. never pass `name:` to Agent (idle-notification routing bug, Claude Code #81439)
 #   2. subagents never spawn their own fan-out
-#   3. `model` is always explicit: haiku for Explore, sonnet for capture work, opus otherwise
-#   4. screenshot capture runs on sonnet, never opus
-#   5. a subagent cannot ship a whole ticket end-to-end
+#   3. a subagent cannot ship a whole ticket end-to-end
+#   4. `model` is always explicit: haiku for Explore, sonnet for capture work, opus otherwise
+#   5. screenshot capture runs on sonnet, never opus
 #   6. fable is reserved for design work
 #
 # FAIL-OPEN: any internal error allows the call and prints one stderr line.
@@ -73,11 +73,26 @@ model = model.strip() if isinstance(model, str) else ""
 if subagent_type.lower() == "fork":
     sys.exit(0)
 
-capture_re = re.compile(r"captur|screenshot|before/after (pairs|shots)", re.IGNORECASE)
-not_capture_re = re.compile(r"\b(fix|review|implement|apply)", re.IGNORECASE)
-is_capture = bool(capture_re.search(description)) and not not_capture_re.search(description)
+ticket_re = re.compile(r"^\s*[A-Z]+-\d+[:\s]+")
+# What a dispatch IS is what its description leads with: "Fix the capture
+# findings" is fixing, "Capture review screenshots" is capturing.
+lead = ticket_re.sub("", re.sub(r"^\s*opus-capture:\s*", "", description, flags=re.IGNORECASE))
+is_capture = bool(re.match(r"(re-?)?captur(e|es|ing)\b", lead, re.IGNORECASE))
 
-# 3. default the model explicitly
+# 3. a subagent cannot ship a whole ticket end-to-end. Description only: briefs
+# routinely *forbid* shipping in the prompt, and reading it denied those.
+if re.match(r"ship\b", lead, re.IGNORECASE) and os.environ.get(
+    "CLAUDE_ALLOW_SUBAGENT_SHIP"
+) != "1":
+    emit(
+        "deny",
+        "A subagent cannot run a whole ticket: it cannot spawn reviewers or "
+        "capture agents, so review and capture end up inline at its own "
+        "growing context. Run ship-ticket in the coordinator and dispatch "
+        "implement, review and capture as separate agents.",
+    )
+
+# 4. default the model explicitly
 if not model:
     if subagent_type.lower() == "explore":
         want = "haiku"
@@ -95,7 +110,7 @@ if not model:
         updated,
     )
 
-# 4. screenshot capture runs on sonnet, never opus
+# 5. screenshot capture runs on sonnet, never opus
 if (
     is_capture
     and "opus" in model.lower()
@@ -108,22 +123,6 @@ if (
         "units per opus capture against 4.4 on sonnet for the same turn count). "
         "Re-dispatch with model: sonnet. If the rig itself needs debugging, "
         "prefix the description with opus-capture: and say why in the brief.",
-    )
-
-# 5. a subagent cannot ship a whole ticket end-to-end
-ship_re = re.compile(
-    r"\bship\b.*\bend[- ]to[- ]end\b|/ship-ticket\b|\bship-ticket skill\b",
-    re.IGNORECASE,
-)
-if ship_re.search(description + "\n" + prompt[:600]) and os.environ.get(
-    "CLAUDE_ALLOW_SUBAGENT_SHIP"
-) != "1":
-    emit(
-        "deny",
-        "A subagent cannot run a whole ticket: it cannot spawn reviewers or "
-        "capture agents, so review and capture end up inline at its own "
-        "growing context. Run ship-ticket in the coordinator and dispatch "
-        "implement, review and capture as separate agents.",
     )
 
 # 6. fable is for design work only

@@ -56,6 +56,8 @@ parse_duration() {
 	*) die "--timeout must be seconds or a duration like 45s, 30m, 12h: $raw" ;;
 	esac
 	case "$num" in '' | *[!0-9]*) die "--timeout must be seconds or a duration like 45s, 30m, 12h: $raw" ;; esac
+	# base 10 forced: 010 is ten seconds, and 08s/09m are not invalid octal
+	num=$((10#$num))
 	case "$unit" in
 	s) printf '%s' "$num" ;;
 	m) printf '%s' "$((num * 60))" ;;
@@ -109,9 +111,21 @@ done
 	exit 2
 }
 case "$INTERVAL" in '' | *[!0-9]* | 0) die "--interval must be a positive whole number of seconds" ;; esac
+INTERVAL=$((10#$INTERVAL))
 [ "$TIMEOUT" -gt 0 ] || die "--timeout must be greater than zero"
 
 command -v gh >/dev/null 2>&1 || die "gh is not on PATH"
+
+# A gh call that wedges must not outlive the watch, and macOS has no timeout(1);
+# perl's alarm survives exec, so the bound holds on gh itself. One poll at most.
+GH_TIMEOUT=$INTERVAL
+if [ "$GH_TIMEOUT" -gt 60 ]; then GH_TIMEOUT=60; fi
+if [ "$GH_TIMEOUT" -lt 5 ]; then GH_TIMEOUT=5; fi
+if command -v perl >/dev/null 2>&1; then
+	BOUND=(perl -e 'alarm shift; exec @ARGV' "$GH_TIMEOUT")
+else
+	BOUND=(env) # no perl: the calls run unbounded
+fi
 
 # --- resolve PR numbers and repos ------------------------------------------
 PRS=()
@@ -149,6 +163,9 @@ MSS=()
 SHA=()
 REF=()
 FAILS=()
+FRESH=()
+LAST_OK=()
+LAST_ERR=()
 i=0
 while [ "$i" -lt "$N" ]; do
 	STATE+=("OPEN")
@@ -157,6 +174,9 @@ while [ "$i" -lt "$N" ]; do
 	SHA+=("")
 	REF+=("")
 	FAILS+=("0")
+	FRESH+=("0")
+	LAST_OK+=("")
+	LAST_ERR+=("")
 	i=$((i + 1))
 done
 
@@ -201,7 +221,7 @@ open_others() {
 }
 
 report() {
-	local verdict=$1 hit=$2 elapsed=$3 i=0 rest
+	local verdict=$1 hit=$2 elapsed=$3 i=0 rest stale now
 	while [ "$i" -lt "$N" ]; do
 		pr_line "$i"
 		i=$((i + 1))
@@ -219,11 +239,31 @@ report() {
 		exit 3
 		;;
 	bad)
-		printf 'next: rebase %s on origin/main, push --force-with-lease, re-verify CI (wave §2)\n' \
+		printf 'next: git fetch origin main, rebase %s on origin/main, push --force-with-lease, re-verify CI (wave §2)\n' \
 			"${REF[$hit]:-that branch}"
 		exit 4
 		;;
 	timeout)
+		# States above are the last successful read. If the newest poll of a PR
+		# failed, they may be stale: a merge during the outage looks like silence.
+		stale=""
+		now=$(date +%s)
+		i=0
+		while [ "$i" -lt "$N" ]; do
+			if [ "${FRESH[$i]}" != 1 ]; then
+				if [ -n "${LAST_OK[$i]}" ]; then
+					stale="$stale ${URLS[$i]} (last good read $((now - LAST_OK[i]))s ago)"
+				else
+					stale="$stale ${URLS[$i]} (never read successfully)"
+				fi
+			fi
+			i=$((i + 1))
+		done
+		if [ -n "$stale" ]; then
+			printf 'next: state UNVERIFIED after %ss — the newest poll failed for:%s. Check with gh pr view <pr> --json state,mergeable,mergeStateStatus before acting on the states above, then re-arm pr-merge-wait in the background\n' \
+				"$elapsed" "$stale"
+			exit 5
+		fi
 		printf 'next: nothing — watched %ss, every PR above still open and clean; re-arm pr-merge-wait in the background if the wait should continue\n' \
 			"$elapsed"
 		exit 5
@@ -235,15 +275,17 @@ progress "watching $N PR(s) — interval=${INTERVAL}s timeout=${TIMEOUT}s; silen
 
 start=$(date +%s)
 deadline=$((start + TIMEOUT))
-first_pass=1
 
 while :; do
 	i=0
 	verdict=""
 	hit=0
+	fail_hit=-1
 	while [ "$i" -lt "$N" ]; do
-		if raw=$(gh pr view "${PRS[$i]}" --repo "${PR_REPOS[$i]}" --json "$FIELDS" -q "$QUERY" 2>&1); then
+		if raw=$("${BOUND[@]}" gh pr view "${PRS[$i]}" --repo "${PR_REPOS[$i]}" --json "$FIELDS" -q "$QUERY" 2>&1); then
 			FAILS[i]=0
+			FRESH[i]=1
+			LAST_OK[i]=$(date +%s)
 			IFS='|' read -r st mrg mss sha ref <<<"$raw"
 			STATE[i]=${st:-UNKNOWN}
 			MERGEABLE[i]=${mrg:-UNKNOWN}
@@ -273,25 +315,25 @@ while :; do
 				;;
 			esac
 		else
-			# A permanent problem (wrong number, no access) shows up on the very
-			# first look; after that, network and API blips are retried quietly.
-			if [ "$first_pass" -eq 1 ]; then
-				printf '%s: cannot read PR %s in %s\n%s\n' \
-					"$PROG" "${PRS[$i]}" "${PR_REPOS[$i]}" "$raw" >&2
-				exit 2
-			fi
+			# Every failure is retried, the first one included: a wrong number and
+			# a 502 look identical, and giving up on either loses whatever the
+			# other PRs said this pass. Only MAX_FAILS in a row is fatal.
 			FAILS[i]=$((FAILS[i] + 1))
-			if [ "${FAILS[$i]}" -ge "$MAX_FAILS" ]; then
-				printf '%s: gh failed %s times in a row on %s\n%s\n' \
-					"$PROG" "${FAILS[$i]}" "${URLS[$i]}" "$raw" >&2
-				exit 2
-			fi
+			FRESH[i]=0
+			LAST_ERR[i]=$raw
+			[ "${FAILS[$i]}" -eq 1 ] && progress "gh failed on ${URLS[$i]} — retrying: $(printf '%s' "$raw" | tail -n 1)"
+			[ "${FAILS[$i]}" -ge "$MAX_FAILS" ] && fail_hit=$i
 		fi
 		i=$((i + 1))
 	done
-	first_pass=0
 
+	# A merge, closure or conflict read from one PR outranks another PR's outage.
 	[ -n "$verdict" ] && report "$verdict" "$hit" 0
+	if [ "$fail_hit" -ge 0 ]; then
+		printf '%s: gh failed %s times in a row on %s\n%s\n' \
+			"$PROG" "${FAILS[$fail_hit]}" "${URLS[$fail_hit]}" "${LAST_ERR[$fail_hit]}" >&2
+		exit 2
+	fi
 
 	now=$(date +%s)
 	elapsed=$((now - start))

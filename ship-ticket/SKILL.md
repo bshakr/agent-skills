@@ -161,10 +161,10 @@ One agent per ticket; one agent per task when the work is genuinely multi-task a
 - **The absolute worktree path**, and an instruction to work only inside it (`git rev-parse --show-toplevel` when unsure).
 - The plan, the acceptance criteria, the quoted design spec, and the Step 2b reproduction as the RED case.
 - **TDD per task:** failing test → confirm RED → minimum implementation → confirm GREEN. Run dependent tests when a service or model is touched.
-- **Steps 5 and 6 below, verbatim:** pre-commit gates, then ONE logical commit per ticket with an **explicit pathspec on `git commit`**. No commits between tasks.
+- **Steps 5 and 6 below, verbatim:** pre-commit gates, then ONE logical commit per ticket with an **explicit pathspec on `git commit`** — or one per green checkpoint when the relay rule below applies. No commits between tasks otherwise, and never one that leaves the tree red.
 - **Do not push.** Pushing is the coordinator's, in `pr-handover`.
 - **A `Co-Authored-By` trailer naming the model the agent actually runs on** — an opus implementer commits `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`. Never paste your own model's trailer into a brief; four implementers had to flag that on 09-12.
-- **Relay rule.** Commit at every green checkpoint. At about 100 tool calls, or as soon as your context is clearly heavy with work still remaining, stop: commit what is green, write `<scratchpad>/relay-<task>.md` (30 lines at most: done with SHAs, remaining, traps, the exact next command) and return. Do not push on to finish. A fresh agent continues from the note; an agent's cost grows with the square of its length.
+- **Relay rule.** Commit at every green checkpoint — they are all implementation commits and are never squashed, so the history still reads implementation then review fixes. At about 100 tool calls, or as soon as your context is clearly heavy with work still remaining, stop: commit what is green, write `<scratchpad>/relay-<task>.md` (30 lines at most: done with SHAs, remaining, traps, the exact next command) and return. Do not push on to finish. A fresh agent continues from the note; an agent's cost grows with the square of its length.
 
 **Slice before dispatch.** A brief carries one side of a seam (server or UI), never a whole vertical. When an agent returns a relay note, dispatch a fresh agent with the note and the branch; never SendMessage the stopped agent to carry on, since that resumes the same heavy context.
 
@@ -249,7 +249,7 @@ When a ticket genuinely depends on an unmerged PR (an epic shipped in ordered sl
 ## End state
 
 1. A green PR linked to the Linear ticket, mergeable against current `main`, its full URL printed in the chat.
-2. Either two commits (implementation + review fixes) or one commit carrying `/review ran on <SHA> — 0 findings`.
+2. Implementation commits — one, or one per relay checkpoint, never squashed — then review fixes as a separate commit; or implementation alone carrying `/review ran on <SHA> — 0 findings`.
 3. UI PRs: a `## Screenshots` section whose first line is the gallery Artifact URL, and the gallery carrying the PR backlink. API-only PRs: the explicit "No user-visible surface" line.
 4. A Linear comment on the ticket carrying the PR URL and the gallery URL, ticket in "In Review".
 5. A background `pr-merge-wait` watching the PR, so the user never has to announce the merge and no turn is spent waiting for it.

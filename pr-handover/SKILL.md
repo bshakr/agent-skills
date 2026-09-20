@@ -111,7 +111,8 @@ the `capture-pairs` skill:
 - Brief carries: worktree path, branch, **the true fork point SHA**
   (`git merge-base origin/main HEAD`) as the base ref, never the string "main";
   routes and states matrix; tenant subdomain and login method; viewport(s);
-  theme(s); every feature flag on AND off variant; output dir. End it with the
+  theme(s); on AND off variants of every flag gate the PR adds or changes;
+  output dir. End it with the
   report protocol: "Write your full report to `<dir>/VERDICT.md` and make your
   LAST action a reply containing only: the path, a one-line verdict, and
   Critical/Important/Minor counts."
@@ -121,8 +122,8 @@ the `capture-pairs` skill:
 When the verdict lands: **never `Read` a PNG** (image reads are the largest
 context consumer), read `VERDICT.md` and `manifest.json` only, and check the
 manifest covers **every changed surface** from `git diff --name-only`, including
-the **flag-off pair** for flagged work and every state the diff implies (empty,
-populated, loading, error). A missing surface goes back to the same agent; do
+the **flag-off pair** when the PR adds or changes a flag gate, and every state the
+diff implies (empty, populated, loading, error). A missing surface goes back to the same agent; do
 not paper over it. Gaps that genuinely cannot be captured are named in
 `VERDICT.md` and repeated in the PR body with what you did instead. `TaskStop`
 the agent once its terminal report is in.
@@ -229,7 +230,7 @@ idling; it *is* the watch.
 | 0 | merged, SHA printed | **wave §3:** `git fetch origin main`, rebase every remaining open wave branch and re-verify its CI, start the next serialized ticket off the NEW origin/main, post an unprompted rollup, leave merged worktrees in place and suggest `gwt-prune-merged` (dry run) at wave end |
 | 2 | gh or usage error | fix the invocation, re-arm |
 | 3 | closed unmerged | report it; ask Bass before reopening or re-pushing |
-| 4 | conflicting / behind | rebase that branch on origin/main, `push --force-with-lease`, re-run Steps 8–9, re-arm |
+| 4 | conflicting / behind | `git fetch origin main` first (a wave-mate landed), rebase that branch on origin/main, `push --force-with-lease`, re-run Steps 8–9, re-arm |
 | 5 | timeout, still open and clean | re-arm in the background if the wait should continue |
 
 ## Hard gate — before the word "ready" is used
@@ -238,7 +239,7 @@ idling; it *is* the watch.
 |---|---|
 | Gallery Artifact URL is the first line of `## Screenshots` (UI diff) | open the PR body |
 | API-only PRs say `No user-visible surface (API only)` | open the PR body |
-| Every changed surface covered, flag-off pairs included | `VERDICT.md` vs `git diff --name-only` |
+| Every changed surface covered, flag-off pair where the PR adds or changes a flag gate | `VERDICT.md` vs `git diff --name-only` |
 | CI green | `pr-ci-wait` exit 0 |
 | `mergeable: MERGEABLE` (CLEAN, or BLOCKED only by review requirement) | `gh pr view --json` |
 | `- [x] /review ran on <SHA>` present and matching HEAD | PR body vs `git rev-parse HEAD` |
