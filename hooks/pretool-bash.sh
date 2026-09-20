@@ -141,7 +141,7 @@ if not off("CLAUDE_ALLOW_PRUNE_FORCE") and re.search(
 
 # 5. no foreground polling
 if not off("CLAUDE_ALLOW_SLEEP") and re.match(r"^\s*sleep\b", cmd):
-    deny("Use pr-ci-wait in the background, Monitor, or ScheduleWakeup.")
+    deny("Run pr-ci-wait (CI) or pr-merge-wait (merges) with run_in_background; the harness wakes you when it exits.")
 
 sys.exit(0)
 PY

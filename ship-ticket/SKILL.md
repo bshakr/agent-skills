@@ -164,6 +164,9 @@ One agent per ticket; one agent per task when the work is genuinely multi-task a
 - **Steps 5 and 6 below, verbatim:** pre-commit gates, then ONE logical commit per ticket with an **explicit pathspec on `git commit`**. No commits between tasks.
 - **Do not push.** Pushing is the coordinator's, in `pr-handover`.
 - **A `Co-Authored-By` trailer naming the model the agent actually runs on** — an opus implementer commits `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`. Never paste your own model's trailer into a brief; four implementers had to flag that on 09-12.
+- **Relay rule.** Commit at every green checkpoint. At about 100 tool calls, or as soon as your context is clearly heavy with work still remaining, stop: commit what is green, write `<scratchpad>/relay-<task>.md` (30 lines at most: done with SHAs, remaining, traps, the exact next command) and return. Do not push on to finish. A fresh agent continues from the note; an agent's cost grows with the square of its length.
+
+**Slice before dispatch.** A brief carries one side of a seam (server or UI), never a whole vertical. When an agent returns a relay note, dispatch a fresh agent with the note and the branch; never SendMessage the stopped agent to carry on, since that resumes the same heavy context.
 
 When a report lands, **verify on disk, not on the claim**: `git -C <worktree> status --porcelain`, `git log --oneline`, `git show --stat HEAD`, and read the diff yourself. Then TaskStop the agent.
 
@@ -218,7 +221,7 @@ Classify findings:
 
 ## Steps 8–9 — Run the `pr-handover` skill
 
-Don't hand-roll screenshots, push, `gh pr create` and CI polling any more. `pr-handover` verifies HEAD on disk, re-runs the gates, rebases on `origin/main`, re-checks for a duplicate PR, dispatches a `capture-pairs` agent when the diff is user-visible, builds the gallery with `rp-gallery`, publishes it as an Artifact (or writes "No user-visible surface (API only)"), pushes, opens the PR from the template with the `/review ran on <SHA>` line, inserts the gallery link with `pr-append-section` (never `gh pr edit`), waits on `pr-ci-wait` in the background, verifies `mergeable`, comments the PR and gallery URLs on the Linear ticket, republishes the gallery with the PR backlink, arms the merge watch per `wave` §2, and only then emits "review clean, CI green, ready to merge — want me to?". It refuses to say "ready" while a gallery link, green CI, `mergeable=MERGEABLE` or the review SHA line is missing.
+Don't hand-roll screenshots, push, `gh pr create` and CI polling any more. `pr-handover` verifies HEAD on disk, re-runs the gates, rebases on `origin/main`, re-checks for a duplicate PR, dispatches a `capture-pairs` agent when the diff is user-visible, builds the gallery with `rp-gallery`, publishes it as an Artifact (or writes "No user-visible surface (API only)"), pushes, opens the PR from the template with the `/review ran on <SHA>` line, inserts the gallery link with `pr-append-section` (never `gh pr edit`), waits on `pr-ci-wait` in the background, verifies `mergeable`, comments the PR and gallery URLs on the Linear ticket, republishes the gallery with the PR backlink, hands the merge watch to a background `pr-merge-wait` per `wave` §2, and only then emits "review clean, CI green, ready to merge — want me to?". It refuses to say "ready" while a gallery link, green CI, `mergeable=MERGEABLE` or the review SHA line is missing.
 
 After a merge, `wave` §3 owns the rest: fetch, rebase every open wave-mate, start the next ticket, post the rollup.
 
@@ -249,5 +252,5 @@ When a ticket genuinely depends on an unmerged PR (an epic shipped in ordered sl
 2. Either two commits (implementation + review fixes) or one commit carrying `/review ran on <SHA> — 0 findings`.
 3. UI PRs: a `## Screenshots` section whose first line is the gallery Artifact URL, and the gallery carrying the PR backlink. API-only PRs: the explicit "No user-visible surface" line.
 4. A Linear comment on the ticket carrying the PR URL and the gallery URL, ticket in "In Review".
-5. The merge watch armed, so the user never has to announce the merge.
+5. A background `pr-merge-wait` watching the PR, so the user never has to announce the merge and no turn is spent waiting for it.
 6. Worktree left in place and locked — the PR is unmerged. Once it lands, clean up with `gwt-prune-merged` (dry run first, `--force` only on confirmation); `git worktree prune` and `git branch --merged` both misreport squash-merged branches.

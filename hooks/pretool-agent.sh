@@ -4,12 +4,16 @@
 # Enforces Bass's subagent policy mechanically:
 #   1. never pass `name:` to Agent (idle-notification routing bug, Claude Code #81439)
 #   2. subagents never spawn their own fan-out
-#   3. `model` is always explicit: haiku for Explore, opus otherwise
-#   4. fable is reserved for design work
+#   3. `model` is always explicit: haiku for Explore, sonnet for capture work, opus otherwise
+#   4. screenshot capture runs on sonnet, never opus
+#   5. a subagent cannot ship a whole ticket end-to-end
+#   6. fable is reserved for design work
 #
 # FAIL-OPEN: any internal error allows the call and prints one stderr line.
 # Bypass: CLAUDE_SKIP_AGENT_HOOK=1 (all checks), CLAUDE_ALLOW_FABLE=1 (fable gate),
-#         CLAUDE_ALLOW_SUBAGENT_FANOUT=1 (nested spawn gate).
+#         CLAUDE_ALLOW_SUBAGENT_FANOUT=1 (nested spawn gate),
+#         CLAUDE_ALLOW_OPUS_CAPTURE=1 (capture-on-opus gate),
+#         CLAUDE_ALLOW_SUBAGENT_SHIP=1 (whole-ticket-in-a-subagent gate).
 set -uo pipefail
 
 INPUT=$(cat)
@@ -23,6 +27,11 @@ if not isinstance(ti, dict) or not ti:
     sys.exit(0)  # nothing to judge: fail open
 transcript = data.get("transcript_path") or ""
 agent_id = data.get("agent_id") or ""
+
+description = ti.get("description")
+description = description if isinstance(description, str) else ""
+prompt = ti.get("prompt")
+prompt = prompt if isinstance(prompt, str) else ""
 
 
 def emit(decision, reason, updated=None):
@@ -64,27 +73,63 @@ model = model.strip() if isinstance(model, str) else ""
 if subagent_type.lower() == "fork":
     sys.exit(0)
 
+capture_re = re.compile(r"captur|screenshot|before/after (pairs|shots)", re.IGNORECASE)
+not_capture_re = re.compile(r"\b(fix|review|implement|apply)", re.IGNORECASE)
+is_capture = bool(capture_re.search(description)) and not not_capture_re.search(description)
+
 # 3. default the model explicitly
 if not model:
-    want = "haiku" if subagent_type.lower() == "explore" else "opus"
+    if subagent_type.lower() == "explore":
+        want = "haiku"
+    elif is_capture:
+        want = "sonnet"
+    else:
+        want = "opus"
     updated = dict(ti)
     updated["model"] = want
     emit(
         "allow",
         "model was not passed; defaulted to %s per the subagent model policy "
-        "(haiku for Explore, opus otherwise). Pass model explicitly next time."
-        % want,
+        "(haiku for Explore, sonnet for capture work, opus otherwise). Pass "
+        "model explicitly next time." % want,
         updated,
     )
 
-# 4. fable is for design work only
+# 4. screenshot capture runs on sonnet, never opus
+if (
+    is_capture
+    and "opus" in model.lower()
+    and os.environ.get("CLAUDE_ALLOW_OPUS_CAPTURE") != "1"
+    and not description.lower().startswith("opus-capture:")
+):
+    emit(
+        "deny",
+        "Screenshot capture runs on sonnet (policy; measured 2026-09-20: 20.5 "
+        "units per opus capture against 4.4 on sonnet for the same turn count). "
+        "Re-dispatch with model: sonnet. If the rig itself needs debugging, "
+        "prefix the description with opus-capture: and say why in the brief.",
+    )
+
+# 5. a subagent cannot ship a whole ticket end-to-end
+ship_re = re.compile(
+    r"\bship\b.*\bend[- ]to[- ]end\b|/ship-ticket\b|\bship-ticket skill\b",
+    re.IGNORECASE,
+)
+if ship_re.search(description + "\n" + prompt[:600]) and os.environ.get(
+    "CLAUDE_ALLOW_SUBAGENT_SHIP"
+) != "1":
+    emit(
+        "deny",
+        "A subagent cannot run a whole ticket: it cannot spawn reviewers or "
+        "capture agents, so review and capture end up inline at its own "
+        "growing context. Run ship-ticket in the coordinator and dispatch "
+        "implement, review and capture as separate agents.",
+    )
+
+# 6. fable is for design work only
 if "fable" in model.lower():
     if os.environ.get("CLAUDE_ALLOW_FABLE") == "1":
         sys.exit(0)
-    description = ti.get("description")
-    description = description if isinstance(description, str) else ""
-    prompt = ti.get("prompt")
-    prompt = prompt if isinstance(prompt, str) else ""
     haystack = description + "\n" + prompt[:600]
     design_re = re.compile(
         r"design|mockup|mock-up|artboard|canvas|brand|visual direction|"
