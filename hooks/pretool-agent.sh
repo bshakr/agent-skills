@@ -4,12 +4,16 @@
 # Enforces Bass's subagent policy mechanically:
 #   1. never pass `name:` to Agent (idle-notification routing bug, Claude Code #81439)
 #   2. subagents never spawn their own fan-out
-#   3. `model` is always explicit: haiku for Explore, opus otherwise
-#   4. fable is reserved for design work
+#   3. a subagent cannot ship a whole ticket end-to-end
+#   4. `model` is always explicit: haiku for Explore, sonnet for capture work, opus otherwise
+#   5. screenshot capture runs on sonnet, never opus
+#   6. fable is reserved for design work
 #
 # FAIL-OPEN: any internal error allows the call and prints one stderr line.
 # Bypass: CLAUDE_SKIP_AGENT_HOOK=1 (all checks), CLAUDE_ALLOW_FABLE=1 (fable gate),
-#         CLAUDE_ALLOW_SUBAGENT_FANOUT=1 (nested spawn gate).
+#         CLAUDE_ALLOW_SUBAGENT_FANOUT=1 (nested spawn gate),
+#         CLAUDE_ALLOW_OPUS_CAPTURE=1 (capture-on-opus gate),
+#         CLAUDE_ALLOW_SUBAGENT_SHIP=1 (whole-ticket-in-a-subagent gate).
 set -uo pipefail
 
 INPUT=$(cat)
@@ -23,6 +27,11 @@ if not isinstance(ti, dict) or not ti:
     sys.exit(0)  # nothing to judge: fail open
 transcript = data.get("transcript_path") or ""
 agent_id = data.get("agent_id") or ""
+
+description = ti.get("description")
+description = description if isinstance(description, str) else ""
+prompt = ti.get("prompt")
+prompt = prompt if isinstance(prompt, str) else ""
 
 
 def emit(decision, reason, updated=None):
@@ -64,27 +73,62 @@ model = model.strip() if isinstance(model, str) else ""
 if subagent_type.lower() == "fork":
     sys.exit(0)
 
-# 3. default the model explicitly
+ticket_re = re.compile(r"^\s*[A-Z]+-\d+[:\s]+")
+# What a dispatch IS is what its description leads with: "Fix the capture
+# findings" is fixing, "Capture review screenshots" is capturing.
+lead = ticket_re.sub("", re.sub(r"^\s*opus-capture:\s*", "", description, flags=re.IGNORECASE))
+is_capture = bool(re.match(r"(re-?)?captur(e|es|ing)\b", lead, re.IGNORECASE))
+
+# 3. a subagent cannot ship a whole ticket end-to-end. Description only: briefs
+# routinely *forbid* shipping in the prompt, and reading it denied those.
+if re.match(r"ship\b", lead, re.IGNORECASE) and os.environ.get(
+    "CLAUDE_ALLOW_SUBAGENT_SHIP"
+) != "1":
+    emit(
+        "deny",
+        "A subagent cannot run a whole ticket: it cannot spawn reviewers or "
+        "capture agents, so review and capture end up inline at its own "
+        "growing context. Run ship-ticket in the coordinator and dispatch "
+        "implement, review and capture as separate agents.",
+    )
+
+# 4. default the model explicitly
 if not model:
-    want = "haiku" if subagent_type.lower() == "explore" else "opus"
+    if subagent_type.lower() == "explore":
+        want = "haiku"
+    elif is_capture:
+        want = "sonnet"
+    else:
+        want = "opus"
     updated = dict(ti)
     updated["model"] = want
     emit(
         "allow",
         "model was not passed; defaulted to %s per the subagent model policy "
-        "(haiku for Explore, opus otherwise). Pass model explicitly next time."
-        % want,
+        "(haiku for Explore, sonnet for capture work, opus otherwise). Pass "
+        "model explicitly next time." % want,
         updated,
     )
 
-# 4. fable is for design work only
+# 5. screenshot capture runs on sonnet, never opus
+if (
+    is_capture
+    and "opus" in model.lower()
+    and os.environ.get("CLAUDE_ALLOW_OPUS_CAPTURE") != "1"
+    and not description.lower().startswith("opus-capture:")
+):
+    emit(
+        "deny",
+        "Screenshot capture runs on sonnet (policy; measured 2026-09-20: 20.5 "
+        "units per opus capture against 4.4 on sonnet for the same turn count). "
+        "Re-dispatch with model: sonnet. If the rig itself needs debugging, "
+        "prefix the description with opus-capture: and say why in the brief.",
+    )
+
+# 6. fable is for design work only
 if "fable" in model.lower():
     if os.environ.get("CLAUDE_ALLOW_FABLE") == "1":
         sys.exit(0)
-    description = ti.get("description")
-    description = description if isinstance(description, str) else ""
-    prompt = ti.get("prompt")
-    prompt = prompt if isinstance(prompt, str) else ""
     haystack = description + "\n" + prompt[:600]
     design_re = re.compile(
         r"design|mockup|mock-up|artboard|canvas|brand|visual direction|"

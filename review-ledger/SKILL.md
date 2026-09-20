@@ -1,6 +1,6 @@
 ---
 name: review-ledger
-description: Coordinator-driven review loop for multi-task work implemented by parallel subagents. Runs a blocking pre-flight plan scan, writes one brief per task, drives first review, consolidated fix batch and scoped delta re-review, and records every ruling in a ledger file. Invoke for "review the wave", "coordinate these tasks", "run the review ledger", or any plan with 3+ tasks dispatched to subagents. For a single diff use /review instead.
+description: Coordinator-driven review loop for multi-task work implemented by parallel subagents. Runs a blocking pre-flight plan scan, writes one brief per task, drives first review, a consolidated fix batch with the coordinator's own ground-truth check, and records every ruling in a ledger file. Invoke for "review the wave", "coordinate these tasks", "run the review ledger", or any plan with 3+ tasks dispatched to subagents. For a single diff use /review instead.
 user-invocable: true
 version: 1.0.0
 repo: https://github.com/bshakr/agent-skills
@@ -134,7 +134,7 @@ result into the finding. A test-gap finding without a mutation result is
 downgraded to Minor on sight. This is how BLO-1455, BLO-1434 and BLO-1440 were
 caught claiming coverage they did not have.
 
-## Step 4: consolidated fix batch, then a scoped delta re-review
+## Step 4: consolidated fix batch, then the coordinator's ground-truth check
 
 **Batch the findings.** One fix dispatch per task carrying every Critical and
 Important finding verbatim, not one dispatch per finding. Minors go to the
@@ -144,19 +144,18 @@ one model tier up, told "a prior implementer attempted this N times; you own
 it now, read the report file". Never fix findings yourself: a coordinator fix
 skips review.
 
-**The re-review is scoped and is a delta review.** Run
-`review-package PLAN_FILE FIX_BASE HEAD` where FIX_BASE is the head the previous
-review saw. The re-reviewer does exactly two things:
+**No re-review agent on the fix commit** (Bassem, 2026-09-16, after PR #114
+ran thirteen delta rounds). The coordinator ground-truths the fixer's report
+inline, in minutes, not with a reviewer:
 
-1. Verdicts each named finding ADDRESSED or NOT ADDRESSED, with the line proving it.
-2. Reviews the fix commit **as new code**: did the fix introduce breakage?
+1. Splice the batch's new specs onto the pre-fix tree and confirm they are red.
+2. Diff the spec files for removed, pended or weakened expectations.
+3. Quote the gate lines (examples/failures, lint, security scan) from a run
+   you started yourself.
 
-Point 2 is not optional and is where the value is. Three shipped-quality
-regressions were introduced by fixes and caught only here: an out-of-order
-`charge.dispute.updated` permanently suppressing the chargeback email; a race
-fix that let a later read cancel an in-flight write so a success toast lied;
-a fix that put `paused` into the expiring set, so one response read "0 active
-members" beside "1 membership expiring".
+Accepted cost: a fix that introduces new breakage is caught by the suite and
+by the next first review, not by a delta pass. Earlier waves caught three
+fix-introduced regressions in that pass; the trade was made knowingly.
 
 New Critical or Important breakage in the fix diff joins the open findings.
 Out-of-scope observations go to the ledger as deferred minors and never extend
@@ -235,6 +234,6 @@ CI, and merging is never yours to take.
 - Do not run this for a single diff. That is `/review`.
 - Do not dispatch implementers before the pre-flight Criticals are resolved.
 - Do not accept a test-gap finding without its mutation result.
-- Do not let a re-review skip the delta pass on the fix commit.
+- Do not dispatch a reviewer agent on a fix commit; ground-truth it yourself.
 - Do not run a fourth round on prose.
 - Do not `git add -A`, do not push from a subagent, do not merge.

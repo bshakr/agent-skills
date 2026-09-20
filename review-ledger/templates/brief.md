@@ -46,6 +46,8 @@ copied into 13 Opus briefs.)
 **No fan-out:** do not dispatch subagents, helpers, or your own reviewer.
 Review comes from the coordinator after your report.
 
+**Relay rule.** Commit at every green checkpoint — they are all implementation commits and are never squashed, so the history still reads implementation then review fixes. At about 100 tool calls, or as soon as your context is clearly heavy with work still remaining, stop: commit what is green, write `<scratchpad>/relay-<task>.md` (30 lines at most: done with SHAs, remaining, traps, the exact next command) and return. Do not push on to finish. A fresh agent continues from the note; an agent's cost grows with the square of its length.
+
 **Report protocol:** write your full report to `<workspace>/task-<N>-report.md`
 (status DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED, commits with SHAs,
 files touched, test command and output, concerns). Make your LAST action a

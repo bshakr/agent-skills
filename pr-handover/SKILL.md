@@ -93,6 +93,15 @@ rendered? It is a UI PR. Otherwise write the literal line
 `No user-visible surface (API only)` into the Screenshots section and go to
 Step 6. Skip explicitly; silence reads as an omission.
 
+**Scope the matrix to changed surfaces** (Bassem, 2026-09-18). Build the
+`routes` list from the components the diff touches (follow imports up to the
+page), not from every route the app has. Exactly one control pair of an
+unchanged surface, proven by md5. Flag-off pair only when the PR adds or
+changes a flag gate. `390x844` only when layout or CSS changed. A copy-only
+edit is one pair on the one screen. The same rule governs re-capture: after
+review fixes or a rebase, `git diff --name-only <old-sha>..HEAD` against the
+captured surfaces decides which after-shots to redo; none moved, none redone.
+
 For a UI PR, dispatch **ONE** capture agent (never two, never a fan-out) running
 the `capture-pairs` skill:
 
@@ -102,7 +111,8 @@ the `capture-pairs` skill:
 - Brief carries: worktree path, branch, **the true fork point SHA**
   (`git merge-base origin/main HEAD`) as the base ref, never the string "main";
   routes and states matrix; tenant subdomain and login method; viewport(s);
-  theme(s); every feature flag on AND off variant; output dir. End it with the
+  theme(s); on AND off variants of every flag gate the PR adds or changes;
+  output dir. End it with the
   report protocol: "Write your full report to `<dir>/VERDICT.md` and make your
   LAST action a reply containing only: the path, a one-line verdict, and
   Critical/Important/Minor counts."
@@ -112,8 +122,8 @@ the `capture-pairs` skill:
 When the verdict lands: **never `Read` a PNG** (image reads are the largest
 context consumer), read `VERDICT.md` and `manifest.json` only, and check the
 manifest covers **every changed surface** from `git diff --name-only`, including
-the **flag-off pair** for flagged work and every state the diff implies (empty,
-populated, loading, error). A missing surface goes back to the same agent; do
+the **flag-off pair** when the PR adds or changes a flag gate, and every state the
+diff implies (empty, populated, loading, error). A missing surface goes back to the same agent; do
 not paper over it. Gaps that genuinely cannot be captured are named in
 `VERDICT.md` and repeated in the PR body with what you did instead. `TaskStop`
 the agent once its terminal report is in.
@@ -158,16 +168,17 @@ greps only for its own additions can never detect what it deleted.
 ## Step 8 — CI
 
 ```bash
-pr-ci-wait <pr>            # run_in_background: true, or under Monitor
+pr-ci-wait <pr>            # run_in_background: true
 ```
 
-Never `gh pr checks --watch` in the foreground. Handle the exits:
+Never `gh pr checks --watch` in the foreground, and never a ScheduleWakeup
+beside it — the background exit is the wake. Handle the exits:
 
 | Exit | Meaning | What you do |
 |---|---|---|
 | 0 | all green | continue to Step 9 |
 | 1 | a check failed | fix it in the worktree, commit, push, re-run `pr-ci-wait`. Never hand over red |
-| 2 | timeout | **never hand over.** Report "CI still running", keep watching |
+| 2 | timeout | **never hand over.** Report "CI still running", re-run `pr-ci-wait` in the background |
 | 3 | PR not found / not open | someone merged or closed it. Go to wave §3 |
 
 A required check reporting `skipped` is NOT green; `pr-ci-wait` warns and names
@@ -198,18 +209,29 @@ mergeability on every open wave branch after any merge.
 3. Memory write **only** for a non-obvious learning (a new trap, a fixture
    relationship, a tool that lies). Routine runs write nothing.
 
-## Step 11 — Arm the merge watch (wave §2)
+## Step 11 — Hand the merge watch to a background process (wave §2)
 
-Merges and conflicts get detected without Bass typing them. Before ending the
-turn, arm ScheduleWakeup (or `/loop`, or Monitor on a background poll) at 300 to
-600 s while CI runs, 1200 s or more while waiting on Bass.
+Merges and conflicts get detected without Bass typing them, and without a turn
+spent waiting. With the ready report:
 
-- Each wake: `gh pr view <pr> --json state,mergeable,mergeStateStatus` and
-  `gh pr list --author @me --state open --json number,mergeStateStatus`.
-- **On merge detected, follow wave §3:** `git fetch origin main`, rebase every
-  remaining open wave branch and re-verify its CI, start the next serialized
-  ticket off the NEW origin/main, post an unprompted rollup, leave merged
-  worktrees in place and suggest `gwt-prune-merged` (dry run) at wave end.
+```bash
+pr-merge-wait <pr> [<pr> ...]   # run_in_background: true, then END THE TURN
+```
+
+It is silent while every watched PR stays open and clean, and wakes you exactly
+once — when there is something to do. **Never** arm ScheduleWakeup, `/loop` or
+Monitor to wait on a human decision: each wake is a whole coordinator turn that
+re-reads 300–400k of context to report "still open, still clean" (51 of them
+measured on 2026-09-20). A background watch armed and the turn ended is not
+idling; it *is* the watch.
+
+| Exit | Meaning | What you do |
+|---|---|---|
+| 0 | merged, SHA printed | **wave §3:** `git fetch origin main`, rebase every remaining open wave branch and re-verify its CI, start the next serialized ticket off the NEW origin/main, post an unprompted rollup, leave merged worktrees in place and suggest `gwt-prune-merged` (dry run) at wave end |
+| 2 | gh or usage error | fix the invocation, re-arm |
+| 3 | closed unmerged | report it; ask Bass before reopening or re-pushing |
+| 4 | conflicting / behind | `git fetch origin main` first (a wave-mate landed), rebase that branch on origin/main, `push --force-with-lease`, re-run Steps 8–9, re-arm |
+| 5 | timeout, still open and clean | re-arm in the background if the wait should continue |
 
 ## Hard gate — before the word "ready" is used
 
@@ -217,11 +239,12 @@ turn, arm ScheduleWakeup (or `/loop`, or Monitor on a background poll) at 300 to
 |---|---|
 | Gallery Artifact URL is the first line of `## Screenshots` (UI diff) | open the PR body |
 | API-only PRs say `No user-visible surface (API only)` | open the PR body |
-| Every changed surface covered, flag-off pairs included | `VERDICT.md` vs `git diff --name-only` |
+| Every changed surface covered, flag-off pair where the PR adds or changes a flag gate | `VERDICT.md` vs `git diff --name-only` |
 | CI green | `pr-ci-wait` exit 0 |
 | `mergeable: MERGEABLE` (CLEAN, or BLOCKED only by review requirement) | `gh pr view --json` |
 | `- [x] /review ran on <SHA>` present and matching HEAD | PR body vs `git rev-parse HEAD` |
 | Every PR and ticket reference is a full clickable URL, tables included | read the body |
+| The merge watch is a background `pr-merge-wait`, never a wakeup | the Bash call carries `run_in_background: true` |
 
 Any row unmet: the report leads with **"DO NOT MERGE YET"** and names the open
 item. All rows met, the last line is verbatim:
