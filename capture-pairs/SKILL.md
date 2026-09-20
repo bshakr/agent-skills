@@ -19,8 +19,14 @@ never spawn your own subagents. The coordinator never opens an image, so *you* a
 pair of eyes on these PNGs: a shot of the wrong route or a logged-out redirect is worse than
 no shot at all.
 
-Read `projects/<project>.md` in this skill directory before step 1. Core recipe below, project
-facts (ports, login, seeds, DB isolation) in the appendix.
+Before step 1, read the `## Capturing screenshots` section of the project's own instructions:
+`CLAUDE.md` or `AGENTS.md` at the repo root, plus the app directory's own `AGENTS.md`/`CLAUDE.md`
+in a monorepo. That section carries the facts this recipe cannot: how to boot the app for
+capture, how a session is obtained without typed credentials, which fixtures to touch and how to
+restore them, the title and route assertions per surface, the traps already paid for, and the
+project's capture rig if it has one — use the rig, do not hand-write a harness beside it. If the
+project has no such section, do not guess: report that to the coordinator, who either supplies
+the facts in the brief or has the section written first.
 
 ## 1. Inputs the brief must carry
 
@@ -43,8 +49,9 @@ is how a whole matrix gets recaptured.
 ### Brief template (coordinator copy-pastes this)
 
 ```
-Run the capture-pairs skill (~/.claude/skills/capture-pairs/SKILL.md) and its
-projects/<project>.md appendix. Do not skip a step; do not invent a route.
+Run the capture-pairs skill (~/.claude/skills/capture-pairs/SKILL.md) and the
+"## Capturing screenshots" section of this project's own instructions. Do not
+skip a step; do not invent a route.
 
 worktree:  /abs/path/.koh/<branch>
 branch:    <branch>
@@ -52,7 +59,7 @@ base_sha:  <output of: git merge-base origin/main <branch>>   # frozen, see belo
 routes:
   - /dashboard | populated (3 upcoming shifts) | after login as <user>
   - /dashboard | empty (no shifts)             | delete shifts, restore SQL recorded
-login:     <injection method from the appendix>
+login:     <injection method from the project's instructions>
 viewports: 1440x900, 390x844
 themes:    light
 flags:     <flag>=on and <flag>=off, both halves
@@ -78,8 +85,8 @@ to `base_sha`. If they differ, stop and tell the coordinator: the branch was reb
 **1. Build the "before" tree.** `git worktree add --detach <tmp>/before <base_sha>`. A detached
 worktree at the fork point, never the shared parent checkout, never `git checkout <sha> -- app/`
 under a running server (the bundler serves a stale stylesheet and no number of reloads fixes it).
-Copy the env file in (see the appendix; check with `ls -la` first, a worktree `.env*` is often a
-symlink into the main checkout and writing to it corrupts another agent's rig).
+Copy the env file in (the project's instructions name it; check with `ls -la` first, a worktree
+`.env*` is often a symlink into the main checkout and writing to it corrupts another agent's rig).
 
 **2. Install deps.** Real install in each tree. Never symlink `node_modules` from a sibling
 worktree: Turbopack hard-fails on symlinks that escape the project root, while lint and tsc pass
@@ -180,7 +187,7 @@ say so and say what you did instead.
 - **Shared Redis Flipper.** Flag state is global across processes and databases, so an isolated Postgres isolates nothing. Run your API with a private `FLIPPER_REDIS_URL` db, or use actor-scoped gates. `Flipper.disable` also wipes the actor set: record `boolean_value` and `actors_value` before, restore both.
 - **`pkill -f`.** It has killed other lanes' dev servers repeatedly. Kill only your own PIDs from `rig.txt`.
 - **Shared browser daemon.** One Chromium across agents means another lane navigates your tab mid-shot, and its viewport is context-global and sticky, so your "390px mobile" frames come back as desktop. Run your own daemon/context with its own port and state file; re-assert the viewport before every shot if you cannot.
-- **Plain `localhost` drops the tenant header.** The subdomain is what sets it; on bare localhost the admin calls 403 and the page bounces or spins. Use the subdomain host from the appendix.
+- **Plain `localhost` drops the tenant header.** The subdomain is what sets it; on bare localhost the admin calls 403 and the page bounces or spins. Use the subdomain host the project's instructions name.
 - **`gstack browse` and Claude-in-Chrome are dead on this Mac** (verified across three agents). Use the Playwright bundled with the Playwright MCP package: `require("/opt/homebrew/lib/node_modules/@playwright/mcp/node_modules/playwright")`, or the copy in `~/.npm/_npx/`.
 - **Typed credentials get blocked.** The permission classifier refuses `fill` with an email/password and refuses to relay the string. Use the API-token / cookie / session-injection path.
 - **Full-page capture restarts animations.** `fullPage` re-rasterises; entrance animations replay into the frame. Disable animations globally or await `animationend`, and do not blanket-clear inline `transform`s (that un-hides Radix's off-screen native checkbox and looks like a styling bug).
@@ -190,10 +197,5 @@ say so and say what you did instead.
 - **`/private/tmp` does not survive a reboot.** Copy the shot set somewhere durable before a long gap.
 - **A "before" that never existed.** If a route is new on the branch, it is a `solos` entry, not a pair with a 404 on the left.
 - **Silent uncapturable routes.** Report them. Never quietly drop a route from the matrix.
-
-## 5. Appendices
-
-- `projects/houserota.md` (Rota Monster)
-- `projects/ritualpass-admin-web.md`
-- `projects/ritualpass-client-web.md`
-- `projects/ritualpass-api.md`
+- **A trap the project already knows about.** Anything you learn the hard way belongs in the
+  project's `## Capturing screenshots` section, not in your VERDICT alone. Say so in your report.
