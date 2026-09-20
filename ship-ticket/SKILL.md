@@ -210,7 +210,7 @@ Classify findings:
 - **ASK** — design decisions, user-visible behavior, scope changes. Batch into one AskUserQuestion with a recommendation.
 - **Out of scope** — note in the PR body; don't expand the diff.
 
-**Consolidate every review pass into ONE fix batch.** Never trickle fixes reviewer by reviewer. Commit the batch separately so the diff reads "implementation" then "review fixes", then **delta-review the fix commit as new code** — a scoped pass that confirms each named finding is actually closed and hunts for breakage the fix introduced. Re-run affected tests + full suite + lint.
+**Consolidate every review pass into ONE fix batch.** Never trickle fixes reviewer by reviewer. Commit the batch separately so the diff reads "implementation" then "review fixes". No delta review of the fix commit (Bassem, 2026-09-16): the coordinator ground-truths the fixer's report inline instead — splice the new specs onto the pre-fix tree and confirm they are red, diff the spec files for removed or weakened expectations, quote the gate lines. Re-run affected tests + full suite + lint.
 
 **Stop condition:** once a round returns only prose or polish, freeze the branch and file the remainder as tickets. BLO-1486 took 10 commits and five declared "freezes"; the last two rounds produced no product.
 

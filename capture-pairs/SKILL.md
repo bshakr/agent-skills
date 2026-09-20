@@ -32,11 +32,11 @@ is how a whole matrix gets recaptured.
 | `worktree` | Absolute path to the branch worktree. Write nothing outside it and the output dir. |
 | `branch` | Branch name, for the VERDICT header. |
 | `base_sha` | The **true fork point**, `git merge-base origin/main <branch>`, never the word "main". |
-| `routes` | Route x state matrix: route, what state it must show (empty, populated, loading, error), how to reach that state. |
+| `routes` | Route x state matrix: route, what state it must show (empty, populated, loading, error), how to reach that state. Only surfaces the diff touches, plus exactly one control pair of an unchanged surface; the coordinator derives it from the touched components, not from the app's route list. |
 | `login` | Tenant/household, user, and the *injection* path (cookie, bearer token, harness), never a password to type. |
-| `viewports` | Default `1440x900`; add `390x844` whenever layout changed. |
+| `viewports` | Default `1440x900`; add `390x844` whenever layout or CSS changed, never for copy-only edits. |
 | `themes` | `light`, `dark`, or both. State which is the default. |
-| `flags` | Flag name plus the on and off variants required. Flag-off is the proof existing users are unaffected. |
+| `flags` | Flag name plus the on and off variants required, only when the PR adds or changes a flag gate. Flag-off is the proof existing users are unaffected. |
 | `out_dir` | Where PNGs, `manifest.json` and `VERDICT.md` go. Prefer the session scratchpad. |
 | `ticket`/`pr_url` | For the manifest header. `pr_url` may be empty at first capture. |
 

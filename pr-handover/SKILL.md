@@ -93,6 +93,15 @@ rendered? It is a UI PR. Otherwise write the literal line
 `No user-visible surface (API only)` into the Screenshots section and go to
 Step 6. Skip explicitly; silence reads as an omission.
 
+**Scope the matrix to changed surfaces** (Bassem, 2026-09-18). Build the
+`routes` list from the components the diff touches (follow imports up to the
+page), not from every route the app has. Exactly one control pair of an
+unchanged surface, proven by md5. Flag-off pair only when the PR adds or
+changes a flag gate. `390x844` only when layout or CSS changed. A copy-only
+edit is one pair on the one screen. The same rule governs re-capture: after
+review fixes or a rebase, `git diff --name-only <old-sha>..HEAD` against the
+captured surfaces decides which after-shots to redo; none moved, none redone.
+
 For a UI PR, dispatch **ONE** capture agent (never two, never a fan-out) running
 the `capture-pairs` skill:
 
