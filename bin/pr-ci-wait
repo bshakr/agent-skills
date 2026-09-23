@@ -3,7 +3,8 @@
 #
 #   pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout SECONDS] [--interval SECONDS]
 #
-# Exit codes: 0 all green, 1 a check failed/was cancelled (or a required check
+# Exit codes: 0 all green (or no workflow triggered for the head commit
+# within NO_CI_GRACE seconds, e.g. a docs-only change filtered by paths), 1 a check failed/was cancelled (or a required check
 # was skipped), 2 timeout, 3 PR not found / not open, 64 usage error.
 #
 # Why this exists (retro 2026-09-13): `gh pr checks --watch` was armed before
@@ -38,6 +39,7 @@ TARGET=""
 REPO=""
 TIMEOUT=1800
 INTERVAL=30
+NO_CI_GRACE=120
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -229,6 +231,16 @@ while :; do
 	elapsed=$((now - start))
 
 	if [ "$total" -eq 0 ]; then
+		# A workflow filtered out by paths/branches creates no run at all, so after
+		# a grace period "no checks and no runs" means no CI is coming.
+		if [ "$elapsed" -ge "$NO_CI_GRACE" ]; then
+			runs=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=1" -q .total_count 2>/dev/null || echo "?")
+			if [ "$runs" = "0" ]; then
+				progress "no workflow triggered for ${head_sha:0:7} after ${elapsed}s (path-filtered or no CI): nothing to wait for"
+				printf '%s: no CI triggered — https://github.com/%s/pull/%s\n' "$PROG" "$REPO" "$PR"
+				exit 0
+			fi
+		fi
 		progress "poll $poll (+${elapsed}s) sha=${head_sha:0:7}: no checks registered yet"
 		sleep "$INTERVAL"
 		continue
