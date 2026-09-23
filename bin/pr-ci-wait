@@ -3,7 +3,9 @@
 #
 #   pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout SECONDS] [--interval SECONDS]
 #
-# Exit codes: 0 all green, 1 a check failed/was cancelled (or a required check
+# Exit codes: 0 all green, or no Actions run for a mergeable head commit within
+# NO_CI_GRACE seconds (e.g. a docs-only change filtered by paths); 1 a check
+# failed/was cancelled, the PR conflicts with no run (or a required check
 # was skipped), 2 timeout, 3 PR not found / not open, 64 usage error.
 #
 # Why this exists (retro 2026-09-13): `gh pr checks --watch` was armed before
@@ -23,7 +25,7 @@ usage() {
 usage: pr-ci-wait <pr-number|pr-url> [--repo owner/name]
                   [--timeout SECONDS (default 1800)] [--interval SECONDS (default 30)]
 
-exit 0 all green | 1 failing/cancelled/skipped-required | 2 timeout | 3 PR not found or not open
+exit 0 all green or no CI triggered | 1 failing/conflicting/cancelled/skipped-required | 2 timeout | 3 PR not found or not open
 USAGE
 }
 
@@ -38,6 +40,7 @@ TARGET=""
 REPO=""
 TIMEOUT=1800
 INTERVAL=30
+NO_CI_GRACE=120
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -196,6 +199,7 @@ EOF
 
 # --- poll ------------------------------------------------------------------
 start=$(date +%s)
+grace_start=$start
 deadline=$((start + TIMEOUT))
 poll=0
 checks='[]'
@@ -220,6 +224,7 @@ while :; do
 	if [ -n "$cur_sha" ] && [ "$cur_sha" != "$head_sha" ]; then
 		progress "head moved ${head_sha:0:7} -> ${cur_sha:0:7}; restarting the wait against the new commit"
 		head_sha=$cur_sha
+		grace_start=$now
 		checks='[]'
 		required_names=$(gh pr checks "$PR" --repo "$REPO" --required --json name -q '.[].name' 2>/dev/null || true)
 	fi
@@ -229,6 +234,23 @@ while :; do
 	elapsed=$((now - start))
 
 	if [ "$total" -eq 0 ]; then
+		# A workflow filtered out by paths/branches creates no run at all, so "no
+		# checks and no runs" some time after the head commit appeared means no CI
+		# is coming. A conflicting PR also gets no pull_request run: that is not green.
+		if [ $((now - grace_start)) -ge "$NO_CI_GRACE" ]; then
+			runs=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=1" -q .total_count 2>/dev/null || echo "?")
+			if [ "$runs" = "0" ]; then
+				mergeable=$(gh pr view "$PR" --repo "$REPO" --json mergeable -q .mergeable 2>/dev/null || echo "?")
+				if [ "$mergeable" = "CONFLICTING" ]; then
+					progress "no checks on ${head_sha:0:7} and the PR conflicts with its base: CI cannot run until it is rebased"
+					exit 1
+				fi
+				if [ "$mergeable" = "MERGEABLE" ]; then
+					progress "no GitHub Actions run for ${head_sha:0:7} after $((now - grace_start))s (path-filtered or no CI): nothing to wait for; required checks from other apps were not verified — $pr_url"
+					exit 0
+				fi
+			fi
+		fi
 		progress "poll $poll (+${elapsed}s) sha=${head_sha:0:7}: no checks registered yet"
 		sleep "$INTERVAL"
 		continue

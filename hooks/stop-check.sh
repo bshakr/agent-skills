@@ -145,10 +145,13 @@ for url in urls:
         UI_DIR_RE.search("/" + p) or UI_EXT_RE.search(p) for p in paths
     )
     body = pr.get("body") or ""
-    if touches_ui and "claude.ai/code/artifact" not in body:
+    # A UI-path diff that renders nothing differently is declared, not captured.
+    no_visual_change = re.search(r"(?im)^\s*no visual change:\s*\S", body)
+    if touches_ui and "claude.ai/code/artifact" not in body and not no_visual_change:
         problems.append(
             "PR %s changes UI but its body has no gallery link. Run "
-            "capture-pairs + rp-gallery and pr-append-section." % url
+            "capture-pairs + rp-gallery and pr-append-section, or, if nothing "
+            "renders differently, add a 'No visual change: <evidence>' line." % url
         )
 
     if (pr.get("mergeStateStatus") or "").upper() == "DIRTY":
