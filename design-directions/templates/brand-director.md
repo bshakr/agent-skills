@@ -1,6 +1,6 @@
 # Brief: brand director
 
-Dispatch: `Agent`, `subagent_type: "general-purpose"`, `model: "fable"`, `description: "Brand director: round-<n> direction brief"`. No `name:`.
+Dispatch: `Agent`, `subagent_type: "general-purpose"`, `model: "opus"`, `description: "Brand director: round-<n> direction brief"`. No `name:`.
 One agent. It does not spawn anything.
 
 In SHORT mode, replace everything below "What to write" with the half-page

@@ -1,6 +1,6 @@
 # Brief: design director
 
-Dispatch: `Agent`, `subagent_type: "general-purpose"`, `model: "fable"`,
+Dispatch: `Agent`, `subagent_type: "general-purpose"`, `model: "opus"`,
 `description: "Design director: craft rules and art-direction sheets"`. No `name:`.
 One agent, for the whole round. It does not spawn anything. It stays alive
 through QA (Step 7) and owns every verdict.

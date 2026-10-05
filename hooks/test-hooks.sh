@@ -106,7 +106,7 @@ check "name: set -> deny" deny \
   "$(decision pretool-agent.sh "$(agent_payload "$MAIN_TP" retro-b01 'do a thing' 'the prompt' general-purpose opus)")"
 check "spawn from inside a subagent -> deny" deny \
   "$(decision pretool-agent.sh "$(agent_payload "$SUB_TP" '' 'do a thing' 'the prompt' Explore haiku)")"
-check "fable + design mockups -> allow" allow \
+check "fable + design mockups -> deny" deny \
   "$(decision pretool-agent.sh "$(agent_payload "$MAIN_TP" '' 'design mockups for the dashboard' 'three artboards please' general-purpose fable)")"
 check "fable + implement BLO-1 -> deny" deny \
   "$(decision pretool-agent.sh "$(agent_payload "$MAIN_TP" '' 'implement BLO-1' 'write the migration and the service object' general-purpose fable)")"

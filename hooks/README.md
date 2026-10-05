@@ -34,8 +34,7 @@ Enforces the Subagent and Model Policy in `~/.claude/CLAUDE.md`.
 | the call comes from inside a subagent (`agent_id` present, or `/subagents/` in `transcript_path`) | **deny**: subagents do not fan out, the request goes back to the coordinator |
 | `subagent_type` is `fork` | allow untouched, a fork inherits the parent model by definition |
 | `model` missing | allow with `updatedInput` setting `model` to `haiku` for `Explore`, `opus` otherwise |
-| `model` contains `fable`, and description or the first 600 chars of the prompt read as design work | allow |
-| `model` contains `fable`, anything else | **deny**: fable is for design, opus for implementation and review |
+| `model` contains `fable` | **deny**: opus does design, implementation and review |
 | `sonnet` / `haiku` / `opus` | allow, never blocked |
 
 The design gate is a case-insensitive match on `design`, `mockup`, `mock-up`,
