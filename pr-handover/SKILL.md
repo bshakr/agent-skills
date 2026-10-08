@@ -183,6 +183,7 @@ beside it — the background exit is the wake. Handle the exits:
 | Exit | Meaning | What you do |
 |---|---|---|
 | 0 | all green | continue to Step 9 |
+| 0, stderr / state `exited.reason` says "no GitHub Actions run" / `no CI:` | no CI ran for the head commit (path-filtered or no workflows) | say "no CI ran", never "CI green"; confirm the PR's required checks (`gh pr checks --required`) before continuing |
 | 1 | a check failed | fix it in the worktree, commit, push, re-run `pr-ci-wait`. Never hand over red |
 | 2 | timeout | **never hand over.** Report "CI still running", re-run `pr-ci-wait` in the background |
 | 3 | PR not found / not open | someone merged or closed it. Go to wave §3 |
@@ -246,7 +247,7 @@ idling; it *is* the watch.
 | Gallery Artifact URL is the first line of `## Screenshots` (UI diff) | open the PR body |
 | API-only PRs say `No user-visible surface (API only)`; a UI-path diff with no rendered change says `No visual change: <evidence>` | open the PR body |
 | Every changed surface covered, flag-off pair where the PR adds or changes a flag gate | `VERDICT.md` vs `git diff --name-only` |
-| CI green | `pr-ci-wait` exit 0 |
+| CI green, or "no CI ran" stated as such with required checks confirmed | `pr-ci-wait` exit 0 and its last stderr line |
 | `mergeable: MERGEABLE` (CLEAN, or BLOCKED only by review requirement) | `gh pr view --json` |
 | `- [x] /review ran on <SHA>` present and matching HEAD | PR body vs `git rev-parse HEAD` |
 | Every PR and ticket reference is a full clickable URL, tables included | read the body |

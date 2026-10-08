@@ -146,7 +146,7 @@ for url in urls:
     )
     body = pr.get("body") or ""
     # A UI-path diff that renders nothing differently is declared, not captured.
-    no_visual_change = re.search(r"(?im)^\s*no visual change:\s*\S", body)
+    no_visual_change = re.search(r"(?im)^[ \t]*no visual change:[ \t]*\S", body)
     has_gallery = re.search(r"claude\.ai/(code/)?artifact/", body)
     if touches_ui and not has_gallery and not no_visual_change:
         problems.append(

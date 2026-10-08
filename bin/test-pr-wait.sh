@@ -32,12 +32,18 @@ done
 # runs total_count (default 0; "fail" makes the call fail); STUB_MERGEABLE
 # overrides mergeable; STUB_MOVE=1 gives every pr view a new head SHA and
 # STUB_MOVE_AT=<n> moves it once from call n. Runs API calls go to api.log.
+# STUB_CHKFAIL=1 makes both check reads (pr checks, statusCheckRollup) fail;
+# STUB_FAIL_HEADREAD=1 fails the per-poll headRefOid,state read only.
+# STUB_CLOCK_JUMP=<s> advances the fake clock by s when the moved head is first
+# served (a slow read); clock.log records the fake time of the move and of each runs API call.
 mkdir -p "$WORK/stub"
 cat >"$WORK/stub/gh" <<'STUB'
 #!/usr/bin/env bash
 cnt="$STUB_DIR/count"
 c=$(($(cat "$cnt" 2>/dev/null || printf 0) + 1))
 printf '%s' "$c" >"$cnt"
+all="$*"
+now_fake() { printf '%s' $((1000000 + $(cat "$STUB_DIR/clock" 2>/dev/null || echo 0) * ${STUB_CLOCK_STEP:-0} + $(cat "$STUB_DIR/clockoff" 2>/dev/null || echo 0))); }
 sub="$1 $2"
 arg2=${2:-}
 n=${3:-}
@@ -50,10 +56,19 @@ if [ -n "${STUB_SLOW_FROM:-}" ] && [ "$c" -ge "$STUB_SLOW_FROM" ]; then sleep "$
 mode=${STUB_MODE:-green}
 sha=abc1234def
 if [ -n "${STUB_MOVE:-}" ]; then sha=$(printf 'mv%05dxyz' "$c"); fi
-if [ -n "${STUB_MOVE_AT:-}" ] && [ "$c" -ge "$STUB_MOVE_AT" ]; then sha=def5678abc; fi
+if [ -n "${STUB_MOVE_AT:-}" ] && [ "$c" -ge "$STUB_MOVE_AT" ]; then
+	sha=def5678abc
+	if [ "$sub" = "pr view" ] && [ ! -e "$STUB_DIR/moved" ]; then
+		: >"$STUB_DIR/moved"
+		printf '%s' "${STUB_CLOCK_JUMP:-0}" >"$STUB_DIR/clockoff"
+		printf 'move %s\n' "$(now_fake)" >>"$STUB_DIR/clock.log"
+	fi
+fi
 body='Summary
 | a | b |
 Gallery: https://claude.ai/artifact/xyz "quoted"'
+case "$all" in *"headRefOid,state"*) [ -n "${STUB_FAIL_HEADREAD:-}" ] && { printf 'HTTP 502: Bad Gateway\n' >&2; exit 1; } ;; esac
+case "$all" in *statusCheckRollup*) [ -n "${STUB_CHKFAIL:-}" ] && { printf 'HTTP 502: Bad Gateway\n' >&2; exit 1; } ;; esac
 case "$sub" in
 "pr view")
 	[ "$mode" = notfound ] && { printf 'GraphQL: Could not resolve to a PullRequest with the number of %s.\n' "$n" >&2; exit 1; }
@@ -74,6 +89,7 @@ case "$sub" in
 		headRefOid: $sha, title: ("PR " + $n), body: $body}')
 	;;
 "pr checks")
+	if [ -n "${STUB_CHKFAIL:-}" ] && [ "$required" = 0 ]; then printf 'HTTP 502: Bad Gateway\n' >&2; exit 1; fi
 	if [ -n "${STUB_NOCHECKS:-}" ]; then
 		obj='[]'
 	elif [ "$required" = 1 ]; then
@@ -88,6 +104,7 @@ case "$sub" in
 	;;
 "api repos/"*)
 	printf '%s\n' "$arg2" >>"$STUB_DIR/api.log"
+	printf 'api %s\n' "$(now_fake)" >>"$STUB_DIR/clock.log"
 	[ "${STUB_RUNS:-0}" = fail ] && { printf 'HTTP 502: Bad Gateway\n' >&2; exit 1; }
 	obj=$(jq -cn --argjson n "${STUB_RUNS:-0}" '{total_count: $n, workflow_runs: []}')
 	;;
@@ -115,7 +132,7 @@ if [ -n "${STUB_CLOCK_STEP:-}" ] && [ "$*" = "+%s" ]; then
 	f="$STUB_DIR/clock"
 	c=$(($(cat "$f" 2>/dev/null || echo 0) + 1))
 	printf '%s' "$c" >"$f"
-	echo $((1000000 + c * STUB_CLOCK_STEP))
+	echo $((1000000 + c * STUB_CLOCK_STEP + $(cat "$STUB_DIR/clockoff" 2>/dev/null || echo 0)))
 	exit 0
 fi
 exec /bin/date "$@"
@@ -335,6 +352,31 @@ check "noci head moved once: runs API asked for the new head only" test "$(cat "
 STUB_NOCHECKS=1 STUB_MODE=green run "$BIN_DIR" "$WORK/state-noci-nostate" noci-nostate pr-ci-wait 7 --repo acme/widgets --interval 1 --timeout 1000 --no-state
 check "noci --no-state: exit 0, no file, same stderr" test "$(code_of noci-nostate)" = 0 -a ! -e "$WORK/state-noci-nostate"
 check "noci --no-state: stderr as with state" diff <(normalise "$WORK/noci-ok.stderr") <(normalise "$WORK/noci-nostate.stderr")
+# A poll whose check reads failed has not seen "no checks", so it never takes the no-CI verdict.
+STUB_CHKFAIL=1 STUB_MODE=green run "$BIN_DIR" "$WORK/state-noci-chkfail" noci-chkfail pr-ci-wait 7 --repo acme/widgets --interval 1 --timeout 300
+check "noci check reads fail: keeps waiting, times out 2 ($(code_of noci-chkfail))" test "$(code_of noci-chkfail)" = 2
+check "noci check reads fail: runs API never asked" test ! -e "$WORK/stubstate.$N_RUN/api.log"
+check "noci check reads fail: state stale, exited 2" jq -e '.stale == true and .exited.code == 2' "$WORK/state-noci-chkfail/$CI7"
+STUB_NOCHECKS=1 STUB_FAIL_HEADREAD=1 STUB_MODE=green run "$BIN_DIR" "$WORK/state-noci-headfail" noci-headfail pr-ci-wait 7 --repo acme/widgets --interval 1 --timeout 300
+check "noci head read fails: keeps waiting, times out 2 ($(code_of noci-headfail))" test "$(code_of noci-headfail)" = 2
+check "noci head read fails: runs API never asked" test ! -e "$WORK/stubstate.$N_RUN/api.log"
+STUB_CHKFAIL=1 STUB_FAIL_HEADREAD=1 STUB_MOVE_AT=5 STUB_MODE=green run "$BIN_DIR" "$WORK/state-noci-bothfail" noci-bothfail pr-ci-wait 7 --repo acme/widgets --interval 1 --timeout 300
+check "noci head and check reads fail: times out 2 ($(code_of noci-bothfail))" test "$(code_of noci-bothfail)" = 2
+# A push lands between the empty checks read and the mergeable read (gh call 10):
+# the verdict is refused and the next poll restarts the grace for the new head.
+STUB_NOCHECKS=1 STUB_MODE=green STUB_MOVE_AT=10 run "$BIN_DIR" "$WORK/state-noci-lastpush" noci-lastpush pr-ci-wait 7 --repo acme/widgets --interval 1 --timeout 1000
+check "noci push before the verdict: exit 0 ($(code_of noci-lastpush))" test "$(code_of noci-lastpush)" = 0
+check "noci push before the verdict: verdict on the new head" grep -q 'no GitHub Actions run for def5678 after' "$WORK/noci-lastpush.stderr"
+check "noci push before the verdict: never green for the old head" test "$(grep -c 'no GitHub Actions run for abc1234' "$WORK/noci-lastpush.stderr")" = 0
+check "noci push before the verdict: state on the new head" jq -e '.headSha == "def5678abc" and .exited.code == 0' "$WORK/state-noci-lastpush/$CI7"
+# A slow head read (fake clock jumps 100s while the moved head is served): the
+# grace counts from when the new head was observed, so the runs API is asked
+# at least 120 fake seconds after the move.
+STUB_NOCHECKS=1 STUB_MODE=green STUB_MOVE_AT=5 STUB_CLOCK_JUMP=100 run "$BIN_DIR" "$WORK/state-noci-slowread" noci-slowread pr-ci-wait 7 --repo acme/widgets --interval 1 --timeout 1000
+check "noci slow head read: exit 0 ($(code_of noci-slowread))" test "$(code_of noci-slowread)" = 0
+# shellcheck disable=SC2016 # awk program, not shell
+check "noci slow head read: runs API >= 120s after the move" \
+	awk '$1 == "move" {m = $2} $1 == "api" {a = $2} END {exit !(m && a && a - m >= 120)}' "$WORK/stubstate.$N_RUN/clock.log"
 unset STUB_CLOCK_STEP
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"

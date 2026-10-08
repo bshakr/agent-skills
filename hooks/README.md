@@ -37,9 +37,8 @@ Enforces the Subagent and Model Policy in `~/.claude/CLAUDE.md`.
 | `model` contains `fable` | **deny**: opus does design, implementation and review |
 | `sonnet` / `haiku` / `opus` | allow, never blocked |
 
-The design gate is a case-insensitive match on `design`, `mockup`, `mock-up`,
-`artboard`, `canvas`, `brand`, `visual direction`, `art direction`, `wirefram`,
-`aesthetic`, `typograph`, `palette`, `landing page`, `homepage design`, `logo`.
+The fable gate matches `fable` anywhere in `model` (case-insensitive), whatever
+the task: design work goes to opus like everything else.
 
 Bypass: `CLAUDE_ALLOW_FABLE=1` (fable gate), `CLAUDE_ALLOW_SUBAGENT_FANOUT=1`
 (nested spawn), `CLAUDE_SKIP_AGENT_HOOK=1` (everything).

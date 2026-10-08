@@ -198,6 +198,14 @@ stop_case "open PR, UI diff, gallery linked -> allow" allow \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"See https://claude.ai/code/artifact/abc"}'
 stop_case "open PR, UI diff, claude.ai/artifact gallery linked -> allow" allow \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"See https://claude.ai/artifact/abc"}'
+stop_case "open PR, UI diff, No visual change with evidence -> allow" allow \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"No visual change: built CSS diff drops only unused rules\n\n## Test plan"}'
+stop_case "open PR, UI diff, No visual change with empty evidence -> block" block \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"No visual change:\n\n## Test plan"}'
+stop_case "open PR, UI diff, No visual change mid-body line -> allow" allow \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"## Summary\nRefactor.\n\n## Screenshots\nNo visual change: no rendered output touched"}'
+stop_case "open PR, UI diff, No visual change only mentioned mid-line -> block" block \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"We could say No visual change: here but did not"}'
 stop_case "UI files deleted, no gallery -> allow" allow \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx","additions":0,"deletions":40}],"body":"Summary"}'
 stop_case "UI file with additions, no gallery -> block" block \

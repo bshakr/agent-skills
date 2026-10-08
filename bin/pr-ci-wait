@@ -354,7 +354,7 @@ while :; do
 	if [ -n "$cur_sha" ] && [ "$cur_sha" != "$head_sha" ]; then
 		progress "head moved ${head_sha:0:7} -> ${cur_sha:0:7}; restarting the wait against the new commit"
 		head_sha=$cur_sha
-		grace_start=$now
+		grace_start=$(date +%s)
 		checks='[]'
 		xrun gh pr checks "$PR" --repo "$REPO" --required --json name -q '.[].name' || true
 		required_names=$(cat "$XDIR/out")
@@ -375,15 +375,18 @@ while :; do
 		# A workflow filtered out by paths/branches creates no run at all, so "no
 		# checks and no runs" some time after the head commit appeared means no CI
 		# is coming. A conflicting PR also gets no pull_request run: that is not green.
-		if [ $((now - grace_start)) -ge "$NO_CI_GRACE" ]; then
+		if [ "$STALE" = false ] && [ $((now - grace_start)) -ge "$NO_CI_GRACE" ]; then
 			runs="?"
 			if xrun gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=1" -q .total_count; then
 				runs=$(cat "$XDIR/out")
 			fi
 			if [ "$runs" = "0" ]; then
 				mergeable="?"
-				if xrun gh pr view "$PR" --repo "$REPO" --json mergeable -q .mergeable; then
-					mergeable=$(cat "$XDIR/out")
+				if xrun gh pr view "$PR" --repo "$REPO" --json mergeable,headRefOid; then
+					# A push after the runs read: leave it to the next poll to restart the grace.
+					if [ "$(jq -r '.headRefOid // empty' "$XDIR/out" 2>/dev/null || true)" = "$head_sha" ]; then
+						mergeable=$(jq -r '.mergeable // empty' "$XDIR/out" 2>/dev/null || true)
+					fi
 				fi
 				if [ "$mergeable" = "CONFLICTING" ]; then
 					progress "no checks on ${head_sha:0:7} and the PR conflicts with its base: CI cannot run until it is rebased"
