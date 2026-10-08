@@ -7,9 +7,9 @@
 # was skipped), 2 timeout, 3 PR not found / not open, 64 usage error.
 #
 # State file: after every poll and on exit, writes
-# ${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.json
-# (watcher "ci-wait") so other tools read this watch instead of polling GitHub
-# again. Best-effort and silent; --no-state turns it off.
+# ${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.ci-wait.json
+# (lowercase) so other tools read this watch instead of polling GitHub again.
+# Best-effort and silent; --no-state turns it off.
 #
 # Why this exists (retro 2026-09-13): `gh pr checks --watch` was armed before
 # GitHub had registered any check and returned green against a stale run
@@ -122,47 +122,76 @@ if [ -z "$REPO" ]; then
 fi
 [ -n "$REPO" ] || die "could not determine the repository" 64
 
-# --- confirm the PR exists and is open ------------------------------------
-pr_json=$(gh pr view "$PR" --repo "$REPO" --json number,state,url,headRefOid,title,body 2>&1) || {
-	printf '%s: PR %s not found in %s\n%s\n' "$PROG" "$PR" "$REPO" "$pr_json" >&2
-	exit 3
-}
-pr_state=$(printf '%s' "$pr_json" | jq -r '.state')
-pr_url=$(printf '%s' "$pr_json" | jq -r '.url')
-head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid')
-if [ "$pr_state" != "OPEN" ]; then
-	printf '%s: PR %s is %s, not open (%s)\n' "$PROG" "$PR" "$pr_state" "$pr_url" >&2
-	exit 3
-fi
-
-# --- state file ------------------------------------------------------------
-STATE_FILE="${PR_WATCH_STATE_DIR:-$HOME/.cache/pr-watch}/${REPO//\//__}__${PR}.json"
+# --- state file and child processes -----------------------------------------
+STATE_FILE="${PR_WATCH_STATE_DIR:-$HOME/.cache/pr-watch}/$(printf '%s' "${REPO//\//__}" | tr '[:upper:]' '[:lower:]')__${PR}.ci-wait.json"
 EXIT_REASON="exited"
+PR_META="" # stdout of the first gh pr view; nothing is written until it is set
+PR_STATE=""
+LAST_OK=""
+STALE=false
+STATE_TMP=""
+CHILD_PID=""
 checks='[]'
+XDIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-ci-wait.XXXXXX") || die "cannot create a temporary directory" 1
 
-# $1: exit code, or empty while still polling. Never fails the script, never prints.
+# Runs "$@" with stdout in $XDIR/out and stderr in $XDIR/err. With state on it
+# runs as a waited background child: bash holds a trapped signal until a
+# foreground child exits, but `wait` returns at once.
+xrun() {
+	local rc=0
+	if [ "$STATE_ON" = 1 ]; then
+		"$@" </dev/null >"$XDIR/out" 2>"$XDIR/err" &
+		CHILD_PID=$!
+		wait "$CHILD_PID" || rc=$?
+		CHILD_PID=""
+	else
+		"$@" >"$XDIR/out" 2>"$XDIR/err" || rc=$?
+	fi
+	return "$rc"
+}
+
+# A failing sleep still ends the script through set -e, as a foreground one would.
+nap() {
+	if [ "$STATE_ON" = 1 ]; then
+		sleep "$1" &
+		CHILD_PID=$!
+		wait "$CHILD_PID"
+		CHILD_PID=""
+	else
+		sleep "$1"
+	fi
+}
+
+# $1: exit code, or empty while polling. Never fails the script, never prints.
 write_state() {
-	[ "$STATE_ON" = 1 ] || return 0
+	[ "$STATE_ON" = 1 ] && [ -n "$PR_META" ] || return 0
+	case "$PR_STATE" in OPEN | MERGED | CLOSED) ;; *) return 0 ;; esac
 	{
-		local tmp=""
 		mkdir -p "${STATE_FILE%/*}" &&
-			tmp=$(mktemp "${STATE_FILE}.tmp.XXXXXX") &&
-			printf '%s' "$pr_json" | jq -c \
+			STATE_TMP=$(mktemp "${STATE_FILE}.tmp.XXXXXX") &&
+			printf '%s' "$PR_META" | jq -c \
 				--arg repo "$REPO" --arg number "$PR" --argjson pid "$$" \
-				--arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$head_sha" \
-				--argjson checks "$checks" --arg required "$required_names" \
+				--arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "${head_sha:-}" \
+				--arg state "$PR_STATE" --argjson stale "$STALE" --arg lastok "$LAST_OK" \
+				--argjson checks "$checks" --arg required "${required_names:-}" \
 				--arg code "${1:-}" --arg reason "$EXIT_REASON" '
 				($required | split("\n") | map(select(. != ""))) as $req
 				| {version: 1, repo: $repo, number: ($number | tonumber), watcher: "ci-wait", pid: $pid,
-				   updatedAt: $now, headSha: $sha, title, url, state,
-				   checks: [$checks[] | {name,
+				   updatedAt: $now, headSha: (if $sha != "" then $sha else (.headRefOid // "") end),
+				   state: $state, stale: $stale}
+				+ (if $lastok != "" then {lastOkAt: ($lastok | tonumber | todate)} else {} end)
+				+ (if .title then {title} else {} end)
+				+ (if .url then {url} else {} end)
+				+ {checks: [$checks[] | {name,
 				     status: (if .bucket == "pending" then (.state // "PENDING") else "COMPLETED" end),
 				     conclusion: (if .bucket == "pending" then null else .state end),
-				     required: (.name as $n | $req | index($n) != null)}],
-				   body}
+				     required: (.name as $n | $req | index($n) != null)}]}
+				+ (if .body then {body} else {} end)
 				| if $code != "" then .exited = {code: ($code | tonumber), at: $now, reason: $reason} else . end
-				' >"$tmp" &&
-			mv -f "$tmp" "$STATE_FILE" || rm -f "${tmp:-/nonexistent}"
+				' >"$STATE_TMP" &&
+			mv -f "$STATE_TMP" "$STATE_FILE"
+		[ -z "$STATE_TMP" ] || rm -f "$STATE_TMP"
+		STATE_TMP=""
 	} >/dev/null 2>&1 || true
 }
 
@@ -170,41 +199,54 @@ write_state() {
 on_exit() {
 	local code=$?
 	write_state "$code"
-}
-trap on_exit EXIT
-
-# A plain foreground sleep would hold off a trapped signal until it ends, so
-# with state on, sleep in the background and wait; the signal is re-raised so
-# the exit status stays "killed by signal".
-SLEEP_PID=""
-nap() {
-	if [ "$STATE_ON" = 1 ]; then
-		sleep "$1" &
-		SLEEP_PID=$!
-		wait "$SLEEP_PID" || true
-		SLEEP_PID=""
-	else
-		sleep "$1"
-	fi
+	rm -rf "$XDIR" 2>/dev/null || true
 }
 # shellcheck disable=SC2329 # invoked by the signal traps
-on_signal() {
+on_signal() { # <signal> <exit code>
 	trap - EXIT "$1"
-	[ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null || true
+	[ -z "$CHILD_PID" ] || kill "$CHILD_PID" 2>/dev/null || true
+	[ -z "$STATE_TMP" ] || rm -f "$STATE_TMP" 2>/dev/null || true
+	STATE_TMP=""
 	EXIT_REASON="killed by SIG$1"
 	write_state "$2"
+	rm -rf "$XDIR" 2>/dev/null || true
 	kill -"$1" $$
 }
+trap on_exit EXIT
 if [ "$STATE_ON" = 1 ]; then
 	trap 'on_signal TERM 143' TERM
 	trap 'on_signal INT 130' INT
 	trap 'on_signal HUP 129' HUP
 fi
 
+# --- confirm the PR exists and is open ------------------------------------
+gh_rc=0
+xrun gh pr view "$PR" --repo "$REPO" --json number,state,url,headRefOid,title,body || gh_rc=$?
+pr_json=$(cat "$XDIR/out" "$XDIR/err")
+if [ "$gh_rc" -ne 0 ]; then
+	printf '%s: PR %s not found in %s\n%s\n' "$PROG" "$PR" "$REPO" "$pr_json" >&2
+	EXIT_REASON="PR not found"
+	exit 3
+fi
+# State is parsed from stdout alone, so a gh warning on stderr cannot break it.
+if PR_STATE=$(jq -r '.state' "$XDIR/out" 2>/dev/null); then
+	PR_META=$(cat "$XDIR/out")
+	LAST_OK=$(date +%s)
+fi
+pr_state=$(printf '%s' "$pr_json" | jq -r '.state')
+pr_url=$(printf '%s' "$pr_json" | jq -r '.url')
+head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid')
+if [ "$pr_state" != "OPEN" ]; then
+	printf '%s: PR %s is %s, not open (%s)\n' "$PROG" "$PR" "$pr_state" "$pr_url" >&2
+	EXIT_REASON="PR is $pr_state, not open"
+	exit 3
+fi
+
 progress "watching $pr_url  head=${head_sha:0:7}  timeout=${TIMEOUT}s interval=${INTERVAL}s"
 
 # --- required check names (used for the skipped-required trap) ------------
-required_names=$(gh pr checks "$PR" --repo "$REPO" --required --json name -q '.[].name' 2>/dev/null || true)
+xrun gh pr checks "$PR" --repo "$REPO" --required --json name -q '.[].name' || true
+required_names=$(cat "$XDIR/out")
 
 # Normalise `gh pr view --json statusCheckRollup` into the shape gh pr checks
 # --json emits, so the fallback path feeds the same reporting code.
@@ -231,20 +273,24 @@ ROLLUP_TO_CHECKS='
   end ]'
 
 fetch_checks() {
-	# echoes a JSON array of {name,state,bucket,link,workflow}; empty array when
-	# GitHub has not registered any check yet.
+	# sets checks to a JSON array of {name,state,bucket,link,workflow}; empty
+	# when GitHub has not registered any check yet. CHECKS_OK=0 if both reads failed.
 	local out
-	if out=$(gh pr checks "$PR" --repo "$REPO" --json name,state,bucket,link,workflow 2>/dev/null) &&
+	CHECKS_OK=1
+	if xrun gh pr checks "$PR" --repo "$REPO" --json name,state,bucket,link,workflow &&
+		out=$(cat "$XDIR/out") &&
 		printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
-		printf '%s' "$out"
+		checks=$out
 		return 0
 	fi
-	if out=$(gh pr view "$PR" --repo "$REPO" --json statusCheckRollup 2>/dev/null) &&
+	if xrun gh pr view "$PR" --repo "$REPO" --json statusCheckRollup &&
+		out=$(cat "$XDIR/out") &&
 		printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
-		printf '%s' "$out" | jq -c "$ROLLUP_TO_CHECKS"
+		checks=$(printf '%s' "$out" | jq -c "$ROLLUP_TO_CHECKS")
 		return 0
 	fi
-	printf '[]'
+	CHECKS_OK=0
+	checks='[]'
 }
 
 count_bucket() { printf '%s' "$1" | jq --arg b "$2" '[.[] | select(.bucket == $b)] | length'; }
@@ -293,15 +339,29 @@ while :; do
 
 	# A push mid-wait invalidates everything seen so far: reset and keep going,
 	# rather than reporting the previous run's result (retro b06 §4).
-	cur_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid 2>/dev/null || printf '%s' "$head_sha")
+	poll_ok=0
+	if xrun gh pr view "$PR" --repo "$REPO" --json headRefOid,state; then
+		cur_sha=$(jq -r '.headRefOid // empty' "$XDIR/out" 2>/dev/null || true)
+		st=$(jq -r '.state // empty' "$XDIR/out" 2>/dev/null || true)
+		case "$st" in OPEN | MERGED | CLOSED) PR_STATE=$st poll_ok=1 ;; esac
+	else
+		cur_sha=$head_sha
+	fi
 	if [ -n "$cur_sha" ] && [ "$cur_sha" != "$head_sha" ]; then
 		progress "head moved ${head_sha:0:7} -> ${cur_sha:0:7}; restarting the wait against the new commit"
 		head_sha=$cur_sha
 		checks='[]'
-		required_names=$(gh pr checks "$PR" --repo "$REPO" --required --json name -q '.[].name' 2>/dev/null || true)
+		xrun gh pr checks "$PR" --repo "$REPO" --required --json name -q '.[].name' || true
+		required_names=$(cat "$XDIR/out")
 	fi
 
-	checks=$(fetch_checks)
+	fetch_checks
+	if [ "$poll_ok" = 1 ] && [ "$CHECKS_OK" = 1 ]; then
+		LAST_OK=$(date +%s)
+		STALE=false
+	else
+		STALE=true
+	fi
 	write_state
 	total=$(printf '%s' "$checks" | jq 'length')
 	elapsed=$((now - start))
@@ -361,7 +421,8 @@ if [ "$n_failing" -gt 0 ]; then
 		run_id=$(printf '%s\n' "$link" | sed -n 's#.*/actions/runs/\([0-9][0-9]*\).*#\1#p')
 		[ -n "$run_id" ] || continue
 		printf '\n--- gh run view %s --log-failed (first 40 lines) ---\n' "$run_id" >&2
-		gh run view "$run_id" --repo "$REPO" --log-failed 2>/dev/null | head -40 >&2 || true
+		xrun gh run view "$run_id" --repo "$REPO" --log-failed || true
+		head -40 "$XDIR/out" >&2 || true
 		shown=$((shown + 1))
 	done <<EOF
 $(printf '%s' "$failing" | jq -r '.[] | .link // ""' | sed -n 's#\(.*/actions/runs/[0-9][0-9]*\).*#\1#p' | sort -u)

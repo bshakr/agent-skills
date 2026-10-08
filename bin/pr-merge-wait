@@ -9,8 +9,8 @@
 # conflicting/behind, 5 timeout (all still open and clean), 2 usage or gh error.
 #
 # State files: after every successful read of a PR and on exit, writes
-# ${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.json per PR
-# (watcher "merge-wait"; checks is always [] as this watch does not read them).
+# ${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.merge-wait.json
+# per PR (lowercase; checks is always [] as this watch does not read them).
 # Needs jq, else skipped; best-effort and silent; --no-state turns it off.
 #
 # Why this exists (measured 2026-09-20): the merge watch was ScheduleWakeup, and
@@ -204,30 +204,68 @@ if [ "$STATE_ON" = 1 ]; then
 	QUERY="($QUERY), ({headRefOid, title, body} | tojson)"
 fi
 
-# --- state files -----------------------------------------------------------
+# --- state files and child processes ----------------------------------------
 EXIT_REASON="exited"
+STATE_TMP=""
+CHILD_PID=""
+XDIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-merge-wait.XXXXXX") || die "cannot create a temporary directory"
+
+# Runs "$@" with stdout in $XDIR/out and stderr in $XDIR/err. With state on it
+# runs as a waited background child: bash holds a trapped signal until a
+# foreground child exits, but `wait` returns at once.
+xrun() {
+	local rc=0
+	if [ "$STATE_ON" = 1 ]; then
+		"$@" </dev/null >"$XDIR/out" 2>"$XDIR/err" &
+		CHILD_PID=$!
+		wait "$CHILD_PID" || rc=$?
+		CHILD_PID=""
+	else
+		"$@" >"$XDIR/out" 2>"$XDIR/err" || rc=$?
+	fi
+	return "$rc"
+}
+
+# A failing sleep still ends the script through set -e, as a foreground one would.
+nap() {
+	if [ "$STATE_ON" = 1 ]; then
+		sleep "$1" &
+		CHILD_PID=$!
+		wait "$CHILD_PID"
+		CHILD_PID=""
+	else
+		sleep "$1"
+	fi
+}
 
 # $1: PR index, $2: exit code or empty while polling. Never fails, never prints.
+# Nothing is written for a PR that has never been read successfully.
 write_state() {
-	[ "$STATE_ON" = 1 ] || return 0
+	[ "$STATE_ON" = 1 ] && [ -n "${LAST_OK[$1]}" ] || return 0
+	case "${STATE[$1]}" in OPEN | MERGED | CLOSED) ;; *) return 0 ;; esac
 	{
-		local i=$1 f tmp=""
-		f="${PR_WATCH_STATE_DIR:-$HOME/.cache/pr-watch}/${PR_REPOS[$i]//\//__}__${PRS[$i]}.json"
+		local i=$1 f stale=true
+		[ "${FRESH[$i]}" != 1 ] || stale=false
+		f="${PR_WATCH_STATE_DIR:-$HOME/.cache/pr-watch}/$(printf '%s' "${PR_REPOS[$i]//\//__}" | tr '[:upper:]' '[:lower:]')__${PRS[$i]}.merge-wait.json"
 		mkdir -p "${f%/*}" &&
-			tmp=$(mktemp "${f}.tmp.XXXXXX") &&
-			printf '%s' "${EXTRA[$i]}" | jq -c \
+			STATE_TMP=$(mktemp "${f}.tmp.XXXXXX") &&
+			printf '%s' "${EXTRA[$i]:-"{}"}" | jq -c \
 				--arg repo "${PR_REPOS[$i]}" --arg number "${PRS[$i]}" --argjson pid "$$" \
 				--arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "${URLS[$i]}" \
 				--arg state "${STATE[$i]}" --arg mergeable "${MERGEABLE[$i]}" --arg mss "${MSS[$i]}" \
+				--argjson stale "$stale" --arg lastok "${LAST_OK[$i]}" \
 				--arg code "${2:-}" --arg reason "$EXIT_REASON" '
 				{version: 1, repo: $repo, number: ($number | tonumber), watcher: "merge-wait", pid: $pid,
 				 updatedAt: $now, headSha: (.headRefOid // ""), url: $url, state: $state,
+				 stale: $stale, lastOkAt: ($lastok | tonumber | todate),
 				 mergeable: $mergeable, mergeStateStatus: $mss, checks: []}
 				+ (if .title then {title} else {} end)
 				+ (if .body then {body} else {} end)
 				| if $code != "" then .exited = {code: ($code | tonumber), at: $now, reason: $reason} else . end
-				' >"$tmp" &&
-			mv -f "$tmp" "$f" || rm -f "${tmp:-/nonexistent}"
+				' >"$STATE_TMP" &&
+			mv -f "$STATE_TMP" "$f"
+		[ -z "$STATE_TMP" ] || rm -f "$STATE_TMP"
+		STATE_TMP=""
 	} >/dev/null 2>&1 || true
 }
 
@@ -243,31 +281,20 @@ write_all() {
 on_exit() {
 	local code=$?
 	write_all "$code"
-}
-trap on_exit EXIT
-
-# A plain foreground sleep would hold off a trapped signal until it ends, so
-# with state on, sleep in the background and wait; the signal is re-raised so
-# the exit status stays "killed by signal".
-SLEEP_PID=""
-nap() {
-	if [ "$STATE_ON" = 1 ]; then
-		sleep "$1" &
-		SLEEP_PID=$!
-		wait "$SLEEP_PID" || true
-		SLEEP_PID=""
-	else
-		sleep "$1"
-	fi
+	rm -rf "$XDIR" 2>/dev/null || true
 }
 # shellcheck disable=SC2329 # invoked by the signal traps
-on_signal() {
+on_signal() { # <signal> <exit code>
 	trap - EXIT "$1"
-	[ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null || true
+	[ -z "$CHILD_PID" ] || kill "$CHILD_PID" 2>/dev/null || true
+	[ -z "$STATE_TMP" ] || rm -f "$STATE_TMP" 2>/dev/null || true
+	STATE_TMP=""
 	EXIT_REASON="killed by SIG$1"
 	write_all "$2"
+	rm -rf "$XDIR" 2>/dev/null || true
 	kill -"$1" $$
 }
+trap on_exit EXIT
 if [ "$STATE_ON" = 1 ]; then
 	trap 'on_signal TERM 143' TERM
 	trap 'on_signal INT 130' INT
@@ -377,12 +404,16 @@ while :; do
 	hit=0
 	fail_hit=-1
 	while [ "$i" -lt "$N" ]; do
-		if raw=$("${BOUND[@]}" gh pr view "${PRS[$i]}" --repo "${PR_REPOS[$i]}" --json "$FIELDS" -q "$QUERY" 2>&1); then
+		gh_rc=0
+		xrun "${BOUND[@]}" gh pr view "${PRS[$i]}" --repo "${PR_REPOS[$i]}" --json "$FIELDS" -q "$QUERY" || gh_rc=$?
+		raw=$(cat "$XDIR/out" "$XDIR/err")
+		if [ "$gh_rc" -eq 0 ]; then
 			FAILS[i]=0
 			FRESH[i]=1
 			LAST_OK[i]=$(date +%s)
 			IFS='|' read -r st mrg mss sha ref <<<"$raw"
-			case "$raw" in *$'\n'*) EXTRA[i]=${raw#*$'\n'} ;; esac
+			# from stdout only, so a gh warning on stderr cannot break it
+			EXTRA[i]=$(sed -n 2p "$XDIR/out")
 			STATE[i]=${st:-UNKNOWN}
 			MERGEABLE[i]=${mrg:-UNKNOWN}
 			MSS[i]=${mss:-UNKNOWN}
@@ -420,6 +451,7 @@ while :; do
 			LAST_ERR[i]=$raw
 			[ "${FAILS[$i]}" -eq 1 ] && progress "gh failed on ${URLS[$i]} — retrying: $(printf '%s' "$raw" | tail -n 1)"
 			[ "${FAILS[$i]}" -ge "$MAX_FAILS" ] && fail_hit=$i
+			write_state "$i"
 		fi
 		i=$((i + 1))
 	done
