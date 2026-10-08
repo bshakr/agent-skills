@@ -3,10 +3,15 @@
 # conflicting, then report once and exit.
 #
 #   pr-merge-wait <pr-number|pr-url> [<pr> ...] [--repo owner/name]
-#                 [--interval SECONDS] [--timeout DURATION]
+#                 [--interval SECONDS] [--timeout DURATION] [--no-state]
 #
 # Exit codes: 0 a PR merged, 3 a PR was closed unmerged, 4 a PR went
 # conflicting/behind, 5 timeout (all still open and clean), 2 usage or gh error.
+#
+# State files: after every successful read of a PR and on exit, writes
+# ${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.merge-wait.json
+# per PR (lowercase; checks is always [] as this watch does not read them).
+# Needs jq, else skipped; best-effort and silent; --no-state turns it off.
 #
 # Why this exists (measured 2026-09-20): the merge watch was ScheduleWakeup, and
 # every wake was a full coordinator turn at 300-400k context whose whole content
@@ -25,6 +30,7 @@ usage() {
 usage: pr-merge-wait <pr-number|pr-url> [<pr> ...] [--repo owner/name]
                      [--interval SECONDS (default 120)]
                      [--timeout DURATION (default 12h; 90, 45s, 30m, 12h)]
+                     [--no-state (do not write the state files)]
 
 Silent while every watched PR stays open and clean; prints a handful of lines and
 exits the moment one of them needs a coordinator action.
@@ -44,6 +50,7 @@ REPO=""
 TIMEOUT=43200
 INTERVAL=120
 MAX_FAILS=10
+STATE_ON=1
 TARGETS=()
 
 parse_duration() {
@@ -98,6 +105,10 @@ while [ $# -gt 0 ]; do
 		INTERVAL=${1#--interval=}
 		shift
 		;;
+	--no-state)
+		STATE_ON=0
+		shift
+		;;
 	-*) die "unknown flag: $1" ;;
 	*)
 		TARGETS+=("$1")
@@ -115,6 +126,7 @@ INTERVAL=$((10#$INTERVAL))
 [ "$TIMEOUT" -gt 0 ] || die "--timeout must be greater than zero"
 
 command -v gh >/dev/null 2>&1 || die "gh is not on PATH"
+command -v jq >/dev/null 2>&1 || STATE_ON=0
 
 # A gh call that wedges must not outlive the watch, and macOS has no timeout(1);
 # perl's alarm survives exec, so the bound holds on gh itself. One poll at most.
@@ -166,6 +178,7 @@ FAILS=()
 FRESH=()
 LAST_OK=()
 LAST_ERR=()
+EXTRA=()
 i=0
 while [ "$i" -lt "$N" ]; do
 	STATE+=("OPEN")
@@ -177,6 +190,7 @@ while [ "$i" -lt "$N" ]; do
 	FRESH+=("0")
 	LAST_OK+=("")
 	LAST_ERR+=("")
+	EXTRA+=("{}")
 	i=$((i + 1))
 done
 
@@ -184,6 +198,108 @@ FIELDS='state,mergeable,mergeStateStatus,mergeCommit,headRefName'
 # Joined on "|", not a tab: tab is an IFS whitespace character, so `read` would
 # collapse the empty mergeCommit of an unmerged PR and shift every later field.
 QUERY='[.state, .mergeable, .mergeStateStatus, (.mergeCommit.oid // ""), .headRefName] | join("|")'
+if [ "$STATE_ON" = 1 ]; then
+	# Second output line for the state file; tojson keeps a multi-line body on one line.
+	FIELDS="$FIELDS,headRefOid,title,body"
+	QUERY="($QUERY), ({headRefOid, title, body} | tojson)"
+fi
+
+# --- state files and child processes ----------------------------------------
+EXIT_REASON="exited"
+STATE_TMP=""
+CHILD_PID=""
+XDIR=$(mktemp -d "${TMPDIR:-/tmp}/pr-merge-wait.XXXXXX") || die "cannot create a temporary directory"
+
+# Runs "$@" with stdout in $XDIR/out and stderr in $XDIR/err. With state on it
+# runs as a waited background child: bash holds a trapped signal until a
+# foreground child exits, but `wait` returns at once.
+xrun() {
+	local rc=0
+	if [ "$STATE_ON" = 1 ]; then
+		"$@" </dev/null >"$XDIR/out" 2>"$XDIR/err" &
+		CHILD_PID=$!
+		wait "$CHILD_PID" || rc=$?
+		CHILD_PID=""
+	else
+		"$@" >"$XDIR/out" 2>"$XDIR/err" || rc=$?
+	fi
+	return "$rc"
+}
+
+# A failing sleep still ends the script through set -e, as a foreground one would.
+nap() {
+	if [ "$STATE_ON" = 1 ]; then
+		sleep "$1" &
+		CHILD_PID=$!
+		wait "$CHILD_PID"
+		CHILD_PID=""
+	else
+		sleep "$1"
+	fi
+}
+
+# $1: PR index, $2: exit code or empty while polling. Never fails, never prints.
+# Nothing is written for a PR that has never been read successfully.
+write_state() {
+	[ "$STATE_ON" = 1 ] && [ -n "${LAST_OK[$1]}" ] || return 0
+	case "${STATE[$1]}" in OPEN | MERGED | CLOSED) ;; *) return 0 ;; esac
+	{
+		local i=$1 f stale=true
+		[ "${FRESH[$i]}" != 1 ] || stale=false
+		f="${PR_WATCH_STATE_DIR:-$HOME/.cache/pr-watch}/$(printf '%s' "${PR_REPOS[$i]//\//__}" | tr '[:upper:]' '[:lower:]')__${PRS[$i]}.merge-wait.json"
+		mkdir -p "${f%/*}" &&
+			STATE_TMP=$(mktemp "${f}.tmp.XXXXXX") &&
+			printf '%s' "${EXTRA[$i]:-"{}"}" | jq -c \
+				--arg repo "${PR_REPOS[$i]}" --arg number "${PRS[$i]}" --argjson pid "$$" \
+				--arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "${URLS[$i]}" \
+				--arg state "${STATE[$i]}" --arg mergeable "${MERGEABLE[$i]}" --arg mss "${MSS[$i]}" \
+				--argjson stale "$stale" --arg lastok "${LAST_OK[$i]}" \
+				--arg code "${2:-}" --arg reason "$EXIT_REASON" '
+				{version: 1, repo: $repo, number: ($number | tonumber), watcher: "merge-wait", pid: $pid,
+				 updatedAt: $now, headSha: (.headRefOid // ""), url: $url, state: $state,
+				 stale: $stale, lastOkAt: ($lastok | tonumber | todate),
+				 mergeable: $mergeable, mergeStateStatus: $mss, checks: []}
+				+ (if .title then {title} else {} end)
+				+ (if .body then {body} else {} end)
+				| if $code != "" then .exited = {code: ($code | tonumber), at: $now, reason: $reason} else . end
+				' >"$STATE_TMP" &&
+			mv -f "$STATE_TMP" "$f"
+		[ -z "$STATE_TMP" ] || rm -f "$STATE_TMP"
+		STATE_TMP=""
+	} >/dev/null 2>&1 || true
+}
+
+write_all() {
+	local i=0
+	while [ "$i" -lt "$N" ]; do
+		write_state "$i" "$1"
+		i=$((i + 1))
+	done
+}
+
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+on_exit() {
+	local code=$?
+	write_all "$code"
+	rm -rf "$XDIR" 2>/dev/null || true
+}
+# shellcheck disable=SC2329 # invoked by the signal traps
+on_signal() { # <signal> <exit code>
+	trap - EXIT "$1"
+	[ -z "$CHILD_PID" ] || kill "$CHILD_PID" 2>/dev/null || true
+	[ -z "$STATE_TMP" ] || rm -f "$STATE_TMP" 2>/dev/null || true
+	STATE_TMP=""
+	EXIT_REASON="killed by SIG$1"
+	write_all "$2"
+	rm -rf "$XDIR" 2>/dev/null || true
+	kill -"$1" $$
+}
+trap on_exit EXIT
+if [ "$STATE_ON" = 1 ]; then
+	trap 'on_signal TERM 143' TERM
+	trap 'on_signal INT 130' INT
+	trap 'on_signal HUP 129' HUP
+fi
 
 # CONFLICTING, DIRTY and BEHIND all mean "rebase before this can land".
 # mergeable UNKNOWN is no information at all — GitHub reports it while it
@@ -222,6 +338,12 @@ open_others() {
 
 report() {
 	local verdict=$1 hit=$2 elapsed=$3 i=0 rest stale now
+	case "$verdict" in
+	merged) EXIT_REASON="merged: ${URLS[$hit]}" ;;
+	closed) EXIT_REASON="closed unmerged: ${URLS[$hit]}" ;;
+	bad) EXIT_REASON="conflicting or behind: ${URLS[$hit]}" ;;
+	*) EXIT_REASON="timeout" ;;
+	esac
 	while [ "$i" -lt "$N" ]; do
 		pr_line "$i"
 		i=$((i + 1))
@@ -282,16 +404,22 @@ while :; do
 	hit=0
 	fail_hit=-1
 	while [ "$i" -lt "$N" ]; do
-		if raw=$("${BOUND[@]}" gh pr view "${PRS[$i]}" --repo "${PR_REPOS[$i]}" --json "$FIELDS" -q "$QUERY" 2>&1); then
+		gh_rc=0
+		xrun "${BOUND[@]}" gh pr view "${PRS[$i]}" --repo "${PR_REPOS[$i]}" --json "$FIELDS" -q "$QUERY" || gh_rc=$?
+		raw=$(cat "$XDIR/out" "$XDIR/err")
+		if [ "$gh_rc" -eq 0 ]; then
 			FAILS[i]=0
 			FRESH[i]=1
 			LAST_OK[i]=$(date +%s)
 			IFS='|' read -r st mrg mss sha ref <<<"$raw"
+			# from stdout only, so a gh warning on stderr cannot break it
+			EXTRA[i]=$(sed -n 2p "$XDIR/out")
 			STATE[i]=${st:-UNKNOWN}
 			MERGEABLE[i]=${mrg:-UNKNOWN}
 			MSS[i]=${mss:-UNKNOWN}
 			SHA[i]=$sha
 			REF[i]=$ref
+			write_state "$i"
 			# Precedence when several PRs move in the same poll: a merge subsumes
 			# the others, since its next action rebases every remaining branch.
 			case "${STATE[$i]}" in
@@ -323,6 +451,7 @@ while :; do
 			LAST_ERR[i]=$raw
 			[ "${FAILS[$i]}" -eq 1 ] && progress "gh failed on ${URLS[$i]} — retrying: $(printf '%s' "$raw" | tail -n 1)"
 			[ "${FAILS[$i]}" -ge "$MAX_FAILS" ] && fail_hit=$i
+			write_state "$i"
 		fi
 		i=$((i + 1))
 	done
@@ -332,6 +461,7 @@ while :; do
 	if [ "$fail_hit" -ge 0 ]; then
 		printf '%s: gh failed %s times in a row on %s\n%s\n' \
 			"$PROG" "${FAILS[$fail_hit]}" "${URLS[$fail_hit]}" "${LAST_ERR[$fail_hit]}" >&2
+		EXIT_REASON="gh error: ${URLS[$fail_hit]}"
 		exit 2
 	fi
 
@@ -340,8 +470,8 @@ while :; do
 	remaining=$((deadline - now))
 	[ "$remaining" -le 0 ] && report timeout 0 "$elapsed"
 	if [ "$remaining" -lt "$INTERVAL" ]; then
-		sleep "$remaining"
+		nap "$remaining"
 	else
-		sleep "$INTERVAL"
+		nap "$INTERVAL"
 	fi
 done

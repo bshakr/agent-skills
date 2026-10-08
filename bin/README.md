@@ -12,7 +12,7 @@ done
 ## `pr-ci-wait`
 
 ```
-pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout 1800] [--interval 30]
+pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout 1800] [--interval 30] [--no-state]
 ```
 
 Waits for a check to register (GitHub takes 30 to 90 s after a push), then for nothing to be pending,
@@ -24,6 +24,33 @@ is red and named. Reads `gh pr checks --json name,state,bucket,link,workflow`, f
 
 Exit: **0** green, **1** failing/cancelled or skipped-required, **2** timeout, **3** PR not found or not
 open, **64** usage.
+
+## State files (`pr-ci-wait`, `pr-merge-wait`)
+
+After every poll and once on exit, each watch writes
+`${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.<watcher>.json` (owner and repo
+lowercased; one file per PR per watcher; tmp file + `mv`), so `/hq` reads the watch instead of polling
+GitHub a second time. Nothing is written for a PR that was never read successfully.
+
+```ts
+interface PrWatchState {
+  version: 1; repo: string; number: number; watcher: 'ci-wait' | 'merge-wait'; pid: number;
+  updatedAt: string;  // ISO UTC, time of this write
+  stale: boolean;     // true when the newest poll failed; the fields below are from lastOkAt
+  lastOkAt?: string;  // ISO UTC of the last successful read
+  headSha: string; title?: string; url?: string; state: 'OPEN' | 'MERGED' | 'CLOSED';
+  mergeable?: string; mergeStateStatus?: string;  // merge-wait only
+  checks: { name: string; status: string; conclusion: string | null; required?: boolean }[];  // [] in merge-wait
+  body?: string;
+  exited?: { code: number; at: string; reason: string };  // 143/130/129 with "killed by SIGTERM/INT/HUP"
+}
+```
+
+`pr-ci-wait` reads `title`/`body` once at start and `state` every poll. `pr-merge-wait` adds
+`headRefOid,title,body` to its existing per-poll query and needs `jq` (else writes nothing). No extra `gh`
+calls and no output; a write failure never fails the watch. With state on, `gh` and `sleep` run as waited
+background children so a signal stops the watch at once. `--no-state` turns all of it off. Tests:
+`bin/test-pr-wait.sh` (stubbed `gh`, compares every exit path with `origin/main`).
 
 ## `pr-append-section`
 
