@@ -12,7 +12,7 @@ done
 ## `pr-ci-wait`
 
 ```
-pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout 1800] [--interval 30]
+pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout 1800] [--interval 30] [--no-state]
 ```
 
 Waits for a check to register (GitHub takes 30 to 90 s after a push), then for nothing to be pending,
@@ -24,6 +24,19 @@ is red and named. Reads `gh pr checks --json name,state,bucket,link,workflow`, f
 
 Exit: **0** green, **1** failing/cancelled or skipped-required, **2** timeout, **3** PR not found or not
 open, **64** usage.
+
+## State files (`pr-ci-wait`, `pr-merge-wait`)
+
+After every poll and once on exit, each watch writes
+`${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.json` (one file per PR; tmp file +
+`mv`, so readers never see a partial write), so `/hq` reads the watch instead of polling GitHub a second
+time. Shape: `{version: 1, repo, number, watcher: "ci-wait" | "merge-wait", pid, updatedAt, headSha, title,
+url, state, mergeable?, mergeStateStatus?, checks: [{name, status, conclusion, required?}], body?,
+exited?: {code, at, reason}}`. `exited` carries the script's exit code, or 143/130/129 with
+`killed by SIGTERM/SIGINT/SIGHUP`. `pr-ci-wait` reads `body` once at start and has no `mergeable`;
+`pr-merge-wait` adds `headRefOid,title,body` to its existing per-poll query, needs `jq` (else writes
+nothing) and leaves `checks` empty. No extra `gh` calls, no output, never fails the watch; `--no-state`
+turns it off. Tests: `bin/test-pr-wait.sh` (stubbed `gh`, no network).
 
 ## `pr-append-section`
 

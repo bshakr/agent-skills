@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # pr-ci-wait — poll a pull request until every check has settled, then report.
 #
-#   pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout SECONDS] [--interval SECONDS]
+#   pr-ci-wait <pr-number|pr-url> [--repo owner/name] [--timeout SECONDS] [--interval SECONDS] [--no-state]
 #
 # Exit codes: 0 all green, 1 a check failed/was cancelled (or a required check
 # was skipped), 2 timeout, 3 PR not found / not open, 64 usage error.
+#
+# State file: after every poll and on exit, writes
+# ${PR_WATCH_STATE_DIR:-~/.cache/pr-watch}/<owner>__<repo>__<number>.json
+# (watcher "ci-wait") so other tools read this watch instead of polling GitHub
+# again. Best-effort and silent; --no-state turns it off.
 #
 # Why this exists (retro 2026-09-13): `gh pr checks --watch` was armed before
 # GitHub had registered any check and returned green against a stale run
@@ -22,6 +27,7 @@ usage() {
 	cat >&2 <<'USAGE'
 usage: pr-ci-wait <pr-number|pr-url> [--repo owner/name]
                   [--timeout SECONDS (default 1800)] [--interval SECONDS (default 30)]
+                  [--no-state (do not write the state file)]
 
 exit 0 all green | 1 failing/cancelled/skipped-required | 2 timeout | 3 PR not found or not open
 USAGE
@@ -38,6 +44,7 @@ TARGET=""
 REPO=""
 TIMEOUT=1800
 INTERVAL=30
+STATE_ON=1
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -70,6 +77,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--interval=*)
 		INTERVAL=${1#--interval=}
+		shift
+		;;
+	--no-state)
+		STATE_ON=0
 		shift
 		;;
 	-*) die "unknown flag: $1" ;;
@@ -112,7 +123,7 @@ fi
 [ -n "$REPO" ] || die "could not determine the repository" 64
 
 # --- confirm the PR exists and is open ------------------------------------
-pr_json=$(gh pr view "$PR" --repo "$REPO" --json number,state,url,headRefOid,title 2>&1) || {
+pr_json=$(gh pr view "$PR" --repo "$REPO" --json number,state,url,headRefOid,title,body 2>&1) || {
 	printf '%s: PR %s not found in %s\n%s\n' "$PROG" "$PR" "$REPO" "$pr_json" >&2
 	exit 3
 }
@@ -122,6 +133,72 @@ head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid')
 if [ "$pr_state" != "OPEN" ]; then
 	printf '%s: PR %s is %s, not open (%s)\n' "$PROG" "$PR" "$pr_state" "$pr_url" >&2
 	exit 3
+fi
+
+# --- state file ------------------------------------------------------------
+STATE_FILE="${PR_WATCH_STATE_DIR:-$HOME/.cache/pr-watch}/${REPO//\//__}__${PR}.json"
+EXIT_REASON="exited"
+checks='[]'
+
+# $1: exit code, or empty while still polling. Never fails the script, never prints.
+write_state() {
+	[ "$STATE_ON" = 1 ] || return 0
+	{
+		local tmp=""
+		mkdir -p "${STATE_FILE%/*}" &&
+			tmp=$(mktemp "${STATE_FILE}.tmp.XXXXXX") &&
+			printf '%s' "$pr_json" | jq -c \
+				--arg repo "$REPO" --arg number "$PR" --argjson pid "$$" \
+				--arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$head_sha" \
+				--argjson checks "$checks" --arg required "$required_names" \
+				--arg code "${1:-}" --arg reason "$EXIT_REASON" '
+				($required | split("\n") | map(select(. != ""))) as $req
+				| {version: 1, repo: $repo, number: ($number | tonumber), watcher: "ci-wait", pid: $pid,
+				   updatedAt: $now, headSha: $sha, title, url, state,
+				   checks: [$checks[] | {name,
+				     status: (if .bucket == "pending" then (.state // "PENDING") else "COMPLETED" end),
+				     conclusion: (if .bucket == "pending" then null else .state end),
+				     required: (.name as $n | $req | index($n) != null)}],
+				   body}
+				| if $code != "" then .exited = {code: ($code | tonumber), at: $now, reason: $reason} else . end
+				' >"$tmp" &&
+			mv -f "$tmp" "$STATE_FILE" || rm -f "${tmp:-/nonexistent}"
+	} >/dev/null 2>&1 || true
+}
+
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+on_exit() {
+	local code=$?
+	write_state "$code"
+}
+trap on_exit EXIT
+
+# A plain foreground sleep would hold off a trapped signal until it ends, so
+# with state on, sleep in the background and wait; the signal is re-raised so
+# the exit status stays "killed by signal".
+SLEEP_PID=""
+nap() {
+	if [ "$STATE_ON" = 1 ]; then
+		sleep "$1" &
+		SLEEP_PID=$!
+		wait "$SLEEP_PID" || true
+		SLEEP_PID=""
+	else
+		sleep "$1"
+	fi
+}
+# shellcheck disable=SC2329 # invoked by the signal traps
+on_signal() {
+	trap - EXIT "$1"
+	[ -z "$SLEEP_PID" ] || kill "$SLEEP_PID" 2>/dev/null || true
+	EXIT_REASON="killed by SIG$1"
+	write_state "$2"
+	kill -"$1" $$
+}
+if [ "$STATE_ON" = 1 ]; then
+	trap 'on_signal TERM 143' TERM
+	trap 'on_signal INT 130' INT
+	trap 'on_signal HUP 129' HUP
 fi
 
 progress "watching $pr_url  head=${head_sha:0:7}  timeout=${TIMEOUT}s interval=${INTERVAL}s"
@@ -198,7 +275,6 @@ EOF
 start=$(date +%s)
 deadline=$((start + TIMEOUT))
 poll=0
-checks='[]'
 
 while :; do
 	poll=$((poll + 1))
@@ -211,6 +287,7 @@ while :; do
 			progress "TIMEOUT after ${TIMEOUT}s with checks still pending"
 			print_table "$checks"
 		fi
+		EXIT_REASON="timeout"
 		exit 2
 	fi
 
@@ -225,12 +302,13 @@ while :; do
 	fi
 
 	checks=$(fetch_checks)
+	write_state
 	total=$(printf '%s' "$checks" | jq 'length')
 	elapsed=$((now - start))
 
 	if [ "$total" -eq 0 ]; then
 		progress "poll $poll (+${elapsed}s) sha=${head_sha:0:7}: no checks registered yet"
-		sleep "$INTERVAL"
+		nap "$INTERVAL"
 		continue
 	fi
 
@@ -242,7 +320,7 @@ while :; do
 	progress "poll $poll (+${elapsed}s) sha=${head_sha:0:7}: $total checks — pass=$n_pass fail=$n_fail cancel=$n_cancel skip=$n_skip pending=$n_pending"
 
 	[ "$n_pending" -eq 0 ] && break
-	sleep "$INTERVAL"
+	nap "$INTERVAL"
 done
 
 # --- settled: classify -----------------------------------------------------
@@ -292,8 +370,10 @@ fi
 
 if [ "$bad" -ne 0 ]; then
 	printf '%s: NOT GREEN — %s\n' "$PROG" "$pr_url" >&2
+	EXIT_REASON="not green: failing, cancelled or skipped-required checks"
 	exit 1
 fi
 
 printf '%s: all %s checks green — %s\n' "$PROG" "$(printf '%s' "$checks" | jq 'length')" "$pr_url" >&2
+EXIT_REASON="all checks green"
 exit 0
