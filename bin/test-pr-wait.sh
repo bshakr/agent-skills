@@ -105,7 +105,7 @@ run() {
 	printf '%s' "$?" >"$WORK/$name.code"
 }
 code_of() { cat "$WORK/$1.code"; }
-normalise() { sed -E 's/\+[0-9]+s/+Ns/g; s/after [0-9]+s/after Ns/g; s/[0-9]+s ago/Ns ago/g' "$1"; }
+normalise() { sed -E 's/\+[0-9]+s/+Ns/g; s/watched [0-9]+s/watched Ns/g; s/after [0-9]+s/after Ns/g; s/[0-9]+s ago/Ns ago/g' "$1"; }
 
 # Same scenario on main and on the branch: stdout, stderr and exit code must match.
 same_as_main() { # <name> <script> <args...>
