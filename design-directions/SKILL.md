@@ -3,7 +3,7 @@ name: design-directions
 description: Run a direction round before any visible surface is built. A brand director writes N genuinely divergent directions, a design director writes craft rules and one art-direction sheet per direction, one builder per direction works from its own sheet only, an independent QA pass grades every build against a fixed protocol, then each direction is published as a live preview inside one gallery for the founder to pick from. Invoke for "give me options", "a few designs I can pick from", "bring in a brand director", "4 options and I'll pick one", or before any PR that draws a new user-visible surface.
 user-invocable: true
 argument-hint: "<surface> [--full|--short] [--directions N]"
-version: 1.0.0
+version: 1.1.0
 repo: https://github.com/bshakr/agent-skills
 skill_path: design-directions
 ---
@@ -102,11 +102,11 @@ If Bass says "I'm not sure", that is not a mandate to decide. Ask, in one line: 
 
 Post one line naming the fleet and its rough cost, then spawn.
 
-> Fleet: 1 brand director (fable) + 1 design director (fable) + 4 builders (fable, parallel) + QA (sonnet) + capture (sonnet). Roughly 1.5M to 2.5M subagent tokens for a FULL round, 400k to 700k for SHORT.
+> Fleet: 1 brand director (opus) + 1 design director (opus) + 4 builders (opus, parallel) + QA (opus) + capture (sonnet). Roughly 1.5M to 2.5M subagent tokens for a FULL round, 400k to 700k for SHORT.
 
-Caps and tiering: N directions never exceeds 4. QA and capture run on `sonnet` unless a verdict needs judgment, in which case the design director re-reads on `fable`. SHORT-mode builders may run on `opus`; FULL-mode builders are the one case where `fable` is correct. Pass `model` explicitly on every Agent call and never pass `name:` (idle-notification routing bug, Claude Code #81439); address agents by the returned agent_id. **Every `fable` spawn's `description` starts with `design:`** (for example `design: brand director`, `design: build Lantern`): the `pretool-agent.sh` hook admits fable only when the description or the first 600 characters of the prompt read as design work, and denies it otherwise.
+Caps and tiering: N directions never exceeds 4. Every role runs on `opus` (Bass, 2026-10-05: no fable for design work); capture runs on `sonnet`. Pass `model` explicitly on every Agent call and never pass `name:` (idle-notification routing bug, Claude Code #81439); address agents by the returned agent_id. The `pretool-agent.sh` hook denies fable subagents.
 
-## Step 4: Brand director (`fable`, one agent)
+## Step 4: Brand director (`opus`, one agent)
 
 Brief from `templates/brand-director.md`. It reads the references, the live surface, and every prior round, and writes ONE file: the brand direction, with N named directions.
 
@@ -114,7 +114,7 @@ The binding constraint on that file is the **differentiation test**: with all co
 
 Content, IA and accessibility decisions stay fixed across directions. Visual constraints are reopened: material and atmosphere, imagery or composited product frames as the anchor rather than drawn placeholders, richer choreographed motion.
 
-## Step 5: Design director (`fable`, one agent)
+## Step 5: Design director (`opus`, one agent)
 
 Brief from `templates/design-director.md`. Two deliverables, in order, both to disk:
 
@@ -125,7 +125,7 @@ The design director also writes the **per-round QA addendum** (Step 7) and owns 
 
 ## Step 6: Builders (one per direction, parallel)
 
-Brief from `templates/builder.md`. `fable` in FULL mode, `opus` in SHORT mode.
+Brief from `templates/builder.md`. `opus` in both modes.
 
 **Each builder sees only its own sheet.** Not the other sheets, not the other lanes' output, not a shared skeleton, not a shared component file. The single most expensive mistake available here is handing four agents one page structure. The brand direction and the craft rules are shared; everything below them is not.
 
@@ -137,7 +137,7 @@ Builders self-QA and record deviations from the sheet with reasons and measureme
 
 ## Step 7: QA, verdicts and the fix loop
 
-Independent of the builder, always. `sonnet` against the written protocol; the design director on `fable` when a verdict needs taste. Protocol in `templates/qa-protocol.md`: a generic core plus a per-round addendum the design director writes from the sheets.
+Independent of the builder, always. `opus` against the written protocol; the design director re-reads when a verdict needs taste. Protocol in `templates/qa-protocol.md`: a generic core plus a per-round addendum the design director writes from the sheets.
 
 Generic core, every build, every round:
 

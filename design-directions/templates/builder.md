@@ -1,9 +1,8 @@
 # Brief: builder (one per direction)
 
 Dispatch: one `Agent` per direction, **in parallel, in a single message**.
-`subagent_type: "general-purpose"`; `model: "fable"` in FULL mode, `model:
-"opus"` in SHORT mode. `description: "design: build round-<n> direction <Name>"`
-(the `design:` prefix is what lets the Agent hook admit a fable spawn).
+`subagent_type: "general-purpose"`; `model: "opus"` in both modes. `description: "design: build round-<n> direction <Name>"`
+
 No `name:`. Builders never spawn anything.
 
 The prompt you send opens with this line, verbatim, before the brief below:

@@ -34,13 +34,11 @@ Enforces the Subagent and Model Policy in `~/.claude/CLAUDE.md`.
 | the call comes from inside a subagent (`agent_id` present, or `/subagents/` in `transcript_path`) | **deny**: subagents do not fan out, the request goes back to the coordinator |
 | `subagent_type` is `fork` | allow untouched, a fork inherits the parent model by definition |
 | `model` missing | allow with `updatedInput` setting `model` to `haiku` for `Explore`, `opus` otherwise |
-| `model` contains `fable`, and description or the first 600 chars of the prompt read as design work | allow |
-| `model` contains `fable`, anything else | **deny**: fable is for design, opus for implementation and review |
+| `model` contains `fable` | **deny**: opus does design, implementation and review |
 | `sonnet` / `haiku` / `opus` | allow, never blocked |
 
-The design gate is a case-insensitive match on `design`, `mockup`, `mock-up`,
-`artboard`, `canvas`, `brand`, `visual direction`, `art direction`, `wirefram`,
-`aesthetic`, `typograph`, `palette`, `landing page`, `homepage design`, `logo`.
+The fable gate matches `fable` anywhere in `model` (case-insensitive), whatever
+the task: design work goes to opus like everything else.
 
 Bypass: `CLAUDE_ALLOW_FABLE=1` (fable gate), `CLAUDE_ALLOW_SUBAGENT_FANOUT=1`
 (nested spawn), `CLAUDE_SKIP_AGENT_HOOK=1` (everything).

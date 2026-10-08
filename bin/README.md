@@ -22,8 +22,13 @@ poll and restarts on a push, so it cannot pass on a stale run. A **required** ch
 is red and named. Reads `gh pr checks --json name,state,bucket,link,workflow`, falling back to
 `gh pr view --json statusCheckRollup`; on a failure it prints names, URLs and 40 lines of `--log-failed`.
 
-Exit: **0** green, **1** failing/cancelled or skipped-required, **2** timeout, **3** PR not found or not
-open, **64** usage.
+No CI: 120 s after the head commit appeared with zero checks (the grace restarts when the head moves), it
+asks the Actions runs API for a run on that commit. No run and `MERGEABLE` → exit 0 (path-filtered or no
+CI; required checks from other apps are not verified); no run and `CONFLICTING` → exit 1; otherwise it keeps
+waiting.
+
+Exit: **0** green or no CI triggered, **1** failing/cancelled, skipped-required, or conflicting with no
+run, **2** timeout, **3** PR not found or not open, **64** usage.
 
 ## State files (`pr-ci-wait`, `pr-merge-wait`)
 
@@ -50,7 +55,7 @@ interface PrWatchState {
 `headRefOid,title,body` to its existing per-poll query and needs `jq` (else writes nothing). No extra `gh`
 calls and no output; a write failure never fails the watch. With state on, `gh` and `sleep` run as waited
 background children so a signal stops the watch at once. `--no-state` turns all of it off. Tests:
-`bin/test-pr-wait.sh` (stubbed `gh`, compares every exit path with `origin/main`).
+`bin/test-pr-wait.sh` (stubbed `gh`, compares every exit path with `origin/main`, plus the no-CI cases).
 
 ## `pr-append-section`
 

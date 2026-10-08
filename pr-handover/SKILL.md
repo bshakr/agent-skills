@@ -93,6 +93,12 @@ rendered? It is a UI PR. Otherwise write the literal line
 `No user-visible surface (API only)` into the Screenshots section and go to
 Step 6. Skip explicitly; silence reads as an omission.
 
+A UI-path diff that renders nothing differently (a refactor, a build-config or
+CSS change whose built output drops only unused rules) is not captured either
+(Bassem, 2026-09-23): write `No visual change: <evidence>` as the Screenshots
+section's first line, the evidence being something checkable such as the
+built-CSS diff. The stop hook accepts that line in place of a gallery.
+
 **Scope the matrix to changed surfaces** (Bassem, 2026-09-18). Build the
 `routes` list from the components the diff touches (follow imports up to the
 page), not from every route the app has. Exactly one control pair of an
@@ -145,8 +151,8 @@ gh pr create --title "<TICKET-ID>: <one-line summary>" --body-file <body.md>
 ```
 
 Fill `templates/pr-body.md` from this skill directory. Non-negotiable in it:
-Screenshots section first line is the gallery URL or
-`No user-visible surface (API only)`; the
+Screenshots section first line is the gallery URL,
+`No user-visible surface (API only)` or `No visual change: <evidence>`; the
 `- [x] /review ran on <SHA> — <N findings ...>` line; `Fixes <TICKET-ID>` so
 Linear auto-closes; every PR and ticket reference a full clickable URL,
 including inside tables; the Claude Code attribution footer.
@@ -177,6 +183,7 @@ beside it — the background exit is the wake. Handle the exits:
 | Exit | Meaning | What you do |
 |---|---|---|
 | 0 | all green | continue to Step 9 |
+| 0, stderr / state `exited.reason` says "no GitHub Actions run" / `no CI:` | no CI ran for the head commit (path-filtered or no workflows) | say "no CI ran", never "CI green"; confirm the PR's required checks (`gh pr checks --required`) before continuing |
 | 1 | a check failed | fix it in the worktree, commit, push, re-run `pr-ci-wait`. Never hand over red |
 | 2 | timeout | **never hand over.** Report "CI still running", re-run `pr-ci-wait` in the background |
 | 3 | PR not found / not open | someone merged or closed it. Go to wave §3 |
@@ -238,9 +245,9 @@ idling; it *is* the watch.
 | Must be true | Check |
 |---|---|
 | Gallery Artifact URL is the first line of `## Screenshots` (UI diff) | open the PR body |
-| API-only PRs say `No user-visible surface (API only)` | open the PR body |
+| API-only PRs say `No user-visible surface (API only)`; a UI-path diff with no rendered change says `No visual change: <evidence>` | open the PR body |
 | Every changed surface covered, flag-off pair where the PR adds or changes a flag gate | `VERDICT.md` vs `git diff --name-only` |
-| CI green | `pr-ci-wait` exit 0 |
+| CI green, or "no CI ran" stated as such with required checks confirmed | `pr-ci-wait` exit 0 and its last stderr line |
 | `mergeable: MERGEABLE` (CLEAN, or BLOCKED only by review requirement) | `gh pr view --json` |
 | `- [x] /review ran on <SHA>` present and matching HEAD | PR body vs `git rev-parse HEAD` |
 | Every PR and ticket reference is a full clickable URL, tables included | read the body |

@@ -1,7 +1,7 @@
 # QA protocol for a direction round
 
 Run by an agent that did not build the thing. `model: "sonnet"` for the
-measurements; the design director on `model: "fable"` when a verdict needs
+measurements; the design director on `model: "opus"` when a verdict needs
 taste. Checks 1 to 11 are generic and always run. Check 12 is the per-round
 addendum the design director wrote from the sheets; paste it in before
 dispatching.

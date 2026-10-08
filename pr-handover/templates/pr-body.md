@@ -6,8 +6,9 @@ that genuinely does not apply (do NOT delete "## Screenshots"; an API-only PR
 states that fact on its first line).
 
 Rules this template encodes:
-- Screenshots section, FIRST LINE = the gallery Artifact URL, or the literal
-  "No user-visible surface (API only)". A filename table alone is never
+- Screenshots section, FIRST LINE = the gallery Artifact URL, the literal
+  "No user-visible surface (API only)", or "No visual change: <evidence>" for
+  a UI-path diff that renders nothing differently. A filename table alone is never
   acceptable; it may follow the link as a supplement.
 - Keep the "/review ran on <SHA>" line. It is the hard gate.
 - Every PR and ticket reference is a full clickable URL, inside tables too.
@@ -27,7 +28,7 @@ Ticket: <https://linear.app/<workspace>/issue/<TICKET-ID>>
 
 ## Screenshots
 
-<GALLERY ARTIFACT URL — or exactly: No user-visible surface (API only)>
+<GALLERY ARTIFACT URL — or exactly: No user-visible surface (API only) — or: No visual change: <evidence>>
 
 | Pair | Route | State | Viewport | What to look for |
 |------|-------|-------|----------|------------------|

@@ -7,7 +7,7 @@
 #   3. a subagent cannot ship a whole ticket end-to-end
 #   4. `model` is always explicit: haiku for Explore, sonnet for capture work, opus otherwise
 #   5. screenshot capture runs on sonnet, never opus
-#   6. fable is reserved for design work
+#   6. no fable subagents; opus does design work too
 #
 # FAIL-OPEN: any internal error allows the call and prints one stderr line.
 # Bypass: CLAUDE_SKIP_AGENT_HOOK=1 (all checks), CLAUDE_ALLOW_FABLE=1 (fable gate),
@@ -125,24 +125,14 @@ if (
         "prefix the description with opus-capture: and say why in the brief.",
     )
 
-# 6. fable is for design work only
+# 6. no fable subagents: opus does design, implementation and review
 if "fable" in model.lower():
     if os.environ.get("CLAUDE_ALLOW_FABLE") == "1":
         sys.exit(0)
-    haystack = description + "\n" + prompt[:600]
-    design_re = re.compile(
-        r"design|mockup|mock-up|artboard|canvas|brand|visual direction|"
-        r"art direction|wirefram|aesthetic|typograph|palette|landing page|"
-        r"homepage design|logo",
-        re.IGNORECASE,
-    )
-    if design_re.search(haystack):
-        emit("allow", "fable allowed: the brief reads as design work.")
     emit(
         "deny",
-        "fable is reserved for design work (mockups, artboards, brand/visual "
-        "direction). Use opus for implementation and review, or tag the "
-        "description with design: if this really is design work.",
+        "fable subagents are off: use model opus for design work (mockups, "
+        "brand, visual direction) as well as implementation and review.",
     )
 
 # sonnet / haiku / opus and anything else: never blocked.
