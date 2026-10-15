@@ -206,6 +206,7 @@ Resolve conflicts deliberately — don't `--skip`. If risky, `--abort` and ask. 
 
 - **Single-diff work → run `/review`** via the Skill tool: scope drift, critical pass (SQL safety, races, enum completeness), specialists for meaty diffs, adversarial pass (Claude + Codex).
 - **Multi-task work → run the `review-ledger` skill.** It owns the per-task briefs, the per-task first review, the consolidated fix batch, the scoped re-review and the ruling log.
+- **Extra reviewers from CLAUDE.md** — if your CLAUDE.md requires additional review commands for this repo, run them in parallel with the above, fold their findings into the same fix batch, and record each as its own `- [x] <command> ran on <SHA>` line in the PR body.
 
 Classify findings:
 
