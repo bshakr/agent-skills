@@ -20,7 +20,7 @@ Every ticket, every size, no "diff is small" / "deletions only" / "I already gre
 Bass typed this topology at the start of six sessions. It is the default. Don't ask for it, don't restate it back.
 
 - **Implementation runs in subagents on `model: "opus"`.** You plan, brief, verify, review and report. You don't write the feature diff yourself.
-- **`model: "sonnet"`** for mechanical or fully specified work (captures, resends, formatting, small-diff re-reviews). **`Explore` with `model: "haiku"`** for read-only search. Design work (mockups, artboards, visual direction) runs on **`model: "opus"`**; never spawn `fable` subagents. Pass `model` explicitly on every Agent call; never let one inherit.
+- **`model: "sonnet"`** for mechanical or fully specified work (captures, resends, formatting, small-diff re-reviews). **`Explore` with `model: "haiku"`** for read-only search. Design work (mockups, artboards, visual direction) runs on **`model: "opus"`**. Pass `model` explicitly on every Agent call; never let one inherit.
 - **Never pass `name:` to Agent** (idle-notification routing bug, Claude Code #81439). Address agents by the returned agent_id.
 - **Every brief ends with this footer, verbatim:**
 
