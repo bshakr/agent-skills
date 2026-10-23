@@ -97,7 +97,7 @@ Every brief carries, without exception:
 
 Model policy (contract §2), passed explicitly on every Agent call: `opus` for
 implementation and review, `sonnet` for mechanical work and small-diff
-re-reviews, `haiku` for `Explore`, `fable` only for design. Never pass `name:`
+re-reviews, `haiku` for `Explore`; design work also runs on `opus`. Never pass `name:`
 to Agent (idle-notification routing bug, Claude Code #81439); address agents by
 the returned agent_id.
 
