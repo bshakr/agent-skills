@@ -6,10 +6,13 @@ that genuinely does not apply (do NOT delete "## Screenshots"; an API-only PR
 states that fact on its first line).
 
 Rules this template encodes:
-- Screenshots section, FIRST LINE = the gallery Artifact URL, the literal
-  "No user-visible surface (API only)", or "No visual change: <evidence>" for
-  a UI-path diff that renders nothing differently. A filename table alone is never
-  acceptable; it may follow the link as a supplement.
+- Screenshots section, FIRST LINE = the gallery Artifact URL (big UI change),
+  the literal "No user-visible surface (API only)", "No visual change:
+  <evidence>" for a UI-path diff that renders nothing differently, or
+  "No screenshots: small change (<what changed, one line>)" for a copy edit,
+  one control's state or a small style tweak on one component. Delete the
+  table when there is no gallery. A filename table alone is never acceptable;
+  it may follow the link as a supplement.
 - Keep the "/review ran on <SHA>" line. It is the hard gate.
 - Every PR and ticket reference is a full clickable URL, inside tables too.
 - After `gh pr create`, edit this body ONLY via
@@ -28,7 +31,7 @@ Ticket: <https://linear.app/<workspace>/issue/<TICKET-ID>>
 
 ## Screenshots
 
-<GALLERY ARTIFACT URL — or exactly: No user-visible surface (API only) — or: No visual change: <evidence>>
+<GALLERY ARTIFACT URL — or exactly: No user-visible surface (API only) — or: No visual change: <evidence> — or: No screenshots: small change (<what changed>)>
 
 | Pair | Route | State | Viewport | What to look for |
 |------|-------|-------|----------|------------------|

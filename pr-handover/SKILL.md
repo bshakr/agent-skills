@@ -99,16 +99,25 @@ CSS change whose built output drops only unused rules) is not captured either
 section's first line, the evidence being something checkable such as the
 built-CSS diff. The stop hook accepts that line in place of a gallery.
 
+**Big or small?** Capture and the gallery are for big UI changes only
+(2026-10-26): a new screen or surface, a layout or responsive change, a new
+component or flow, a redesign, or changes across several surfaces. A small
+change is not captured: a copy or label edit, one control's state
+(disabled/enabled, a hint line under it), a small style tweak on one
+component. Decide from the diff, then write
+`No screenshots: small change (<what changed, one line>)` as the Screenshots
+section's first line and go to Step 6. The stop hook accepts that line in
+place of a gallery. When in doubt, it is big.
+
 **Scope the matrix to changed surfaces** (Bassem, 2026-09-18). Build the
 `routes` list from the components the diff touches (follow imports up to the
 page), not from every route the app has. Exactly one control pair of an
 unchanged surface, proven by md5. Flag-off pair only when the PR adds or
-changes a flag gate. `390x844` only when layout or CSS changed. A copy-only
-edit is one pair on the one screen. The same rule governs re-capture: after
+changes a flag gate. `390x844` only when layout or CSS changed. The same rule governs re-capture: after
 review fixes or a rebase, `git diff --name-only <old-sha>..HEAD` against the
 captured surfaces decides which after-shots to redo; none moved, none redone.
 
-For a UI PR, dispatch **ONE** capture agent (never two, never a fan-out) running
+For a big UI PR, dispatch **ONE** capture agent (never two, never a fan-out) running
 the `capture-pairs` skill:
 
 - `model: "sonnet"` for a routine matrix, `opus` when the surface needs judgment.
@@ -152,7 +161,8 @@ gh pr create --title "<TICKET-ID>: <one-line summary>" --body-file <body.md>
 
 Fill `templates/pr-body.md` from this skill directory. Non-negotiable in it:
 Screenshots section first line is the gallery URL,
-`No user-visible surface (API only)` or `No visual change: <evidence>`; the
+`No user-visible surface (API only)`, `No visual change: <evidence>` or
+`No screenshots: small change (<what changed>)`; the
 `- [x] /review ran on <SHA> — <N findings ...>` line; `Fixes <TICKET-ID>` so
 Linear auto-closes; every PR and ticket reference a full clickable URL,
 including inside tables; the Claude Code attribution footer.
@@ -244,8 +254,8 @@ idling; it *is* the watch.
 
 | Must be true | Check |
 |---|---|
-| Gallery Artifact URL is the first line of `## Screenshots` (UI diff) | open the PR body |
-| API-only PRs say `No user-visible surface (API only)`; a UI-path diff with no rendered change says `No visual change: <evidence>` | open the PR body |
+| Gallery Artifact URL is the first line of `## Screenshots` (big UI diff) | open the PR body |
+| API-only PRs say `No user-visible surface (API only)`; a UI-path diff with no rendered change says `No visual change: <evidence>`; a small UI change says `No screenshots: small change (<what changed>)` | open the PR body |
 | Every changed surface covered, flag-off pair where the PR adds or changes a flag gate | `VERDICT.md` vs `git diff --name-only` |
 | CI green, or "no CI ran" stated as such with required checks confirmed | `pr-ci-wait` exit 0 and its last stderr line |
 | `mergeable: MERGEABLE` (CLEAN, or BLOCKED only by review requirement) | `gh pr view --json` |

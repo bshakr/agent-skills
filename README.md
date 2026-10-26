@@ -47,7 +47,7 @@ env vars and the test suites: [`hooks/README.md`](./hooks/README.md).
 | [`pretool-agent.sh`](./hooks/pretool-agent.sh) | PreToolUse `Agent` | No `name:` on spawns, no grandchild agents, explicit model (haiku for Explore, opus otherwise), fable only for design-shaped briefs. |
 | [`pretool-read.sh`](./hooks/pretool-read.sh) | PreToolUse `Read` | The coordinator never reads an image; capture subagents may. |
 | [`pretool-bash.sh`](./hooks/pretool-bash.sh) | PreToolUse `Bash` | In command position only: no PR merging, no `git add -A` / `commit -a`, no raw `railway variables`, no forced worktree prune over commitless live worktrees, no leading `sleep`. |
-| [`stop-check.sh`](./hooks/stop-check.sh) | Stop | Will not end the turn while a PR opened this session has pending or red CI, a UI diff with no gallery link, or conflicts. |
+| [`stop-check.sh`](./hooks/stop-check.sh) | Stop | Will not end the turn while a PR opened this session has pending or red CI, a UI diff with no gallery link (or `No visual change:` / `No screenshots: small change (...)` line), or conflicts. |
 
 Install by symlink and register in `~/.claude/settings.json` (see `hooks/README.md`); verify with
 `bash hooks/test-hooks.sh && bash hooks/test-hooks-prose.sh`.

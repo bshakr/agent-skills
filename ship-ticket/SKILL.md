@@ -221,7 +221,7 @@ Classify findings:
 
 ## Steps 8–9 — Run the `pr-handover` skill
 
-Don't hand-roll screenshots, push, `gh pr create` and CI polling any more. `pr-handover` verifies HEAD on disk, re-runs the gates, rebases on `origin/main`, re-checks for a duplicate PR, dispatches a `capture-pairs` agent when the diff is user-visible, builds the gallery with `rp-gallery`, publishes it as an Artifact (or writes "No user-visible surface (API only)"), pushes, opens the PR from the template with the `/review ran on <SHA>` line, inserts the gallery link with `pr-append-section` (never `gh pr edit`), waits on `pr-ci-wait` in the background, verifies `mergeable`, comments the PR and gallery URLs on the Linear ticket, republishes the gallery with the PR backlink, hands the merge watch to a background `pr-merge-wait` per `wave` §2, and only then emits "review clean, CI green, ready to merge — want me to?". It refuses to say "ready" while a gallery link, green CI, `mergeable=MERGEABLE` or the review SHA line is missing.
+Don't hand-roll screenshots, push, `gh pr create` and CI polling any more. `pr-handover` verifies HEAD on disk, re-runs the gates, rebases on `origin/main`, re-checks for a duplicate PR, dispatches a `capture-pairs` agent when the diff is a big UI change, builds the gallery with `rp-gallery`, publishes it as an Artifact (or writes "No user-visible surface (API only)", or "No screenshots: small change (<what changed>)" for a copy edit, one control's state or a small style tweak), pushes, opens the PR from the template with the `/review ran on <SHA>` line, inserts the gallery link with `pr-append-section` (never `gh pr edit`), waits on `pr-ci-wait` in the background, verifies `mergeable`, comments the PR and gallery URLs on the Linear ticket, republishes the gallery with the PR backlink, hands the merge watch to a background `pr-merge-wait` per `wave` §2, and only then emits "review clean, CI green, ready to merge — want me to?". It refuses to say "ready" while a gallery link, green CI, `mergeable=MERGEABLE` or the review SHA line is missing.
 
 After a merge, `wave` §3 owns the rest: fetch, rebase every open wave-mate, start the next ticket, post the rollup.
 
@@ -250,7 +250,7 @@ When a ticket genuinely depends on an unmerged PR (an epic shipped in ordered sl
 
 1. A green PR linked to the Linear ticket, mergeable against current `main`, its full URL printed in the chat.
 2. Implementation commits — one, or one per relay checkpoint, never squashed — then review fixes as a separate commit; or implementation alone carrying `/review ran on <SHA> — 0 findings`.
-3. UI PRs: a `## Screenshots` section whose first line is the gallery Artifact URL, and the gallery carrying the PR backlink. API-only PRs: the explicit "No user-visible surface" line.
+3. Big UI PRs: a `## Screenshots` section whose first line is the gallery Artifact URL, and the gallery carrying the PR backlink. Small UI PRs: the `No screenshots: small change (<what changed>)` line. API-only PRs: the explicit "No user-visible surface" line.
 4. A Linear comment on the ticket carrying the PR URL and the gallery URL, ticket in "In Review".
 5. A background `pr-merge-wait` watching the PR, so the user never has to announce the merge and no turn is spent waiting for it.
 6. Worktree left in place and locked — the PR is unmerged. Once it lands, clean up with `gwt-prune-merged` (dry run first, `--force` only on confirmation); `git worktree prune` and `git branch --merged` both misreport squash-merged branches.

@@ -206,6 +206,12 @@ stop_case "open PR, UI diff, No visual change mid-body line -> allow" allow \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"## Summary\nRefactor.\n\n## Screenshots\nNo visual change: no rendered output touched"}'
 stop_case "open PR, UI diff, No visual change only mentioned mid-line -> block" block \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"We could say No visual change: here but did not"}'
+stop_case "open PR, UI diff, No screenshots small change -> allow" allow \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"## Screenshots\nNo screenshots: small change (button relabelled and disabled until import finishes)"}'
+stop_case "open PR, UI diff, No screenshots small change without reason -> block" block \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"No screenshots: small change ()\n\n## Test plan"}'
+stop_case "open PR, UI diff, No screenshots small change only mid-line -> block" block \
+  '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx"}],"body":"We skipped it. No screenshots: small change (label)"}'
 stop_case "UI files deleted, no gallery -> allow" allow \
   '{"state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}],"files":[{"path":"apps/web/app/dashboard/page.tsx","additions":0,"deletions":40}],"body":"Summary"}'
 stop_case "UI file with additions, no gallery -> block" block \
