@@ -1,6 +1,6 @@
 ---
 name: capture-pairs
-description: Capture before/after screenshot pairs for a UI PR and emit an rp-gallery manifest plus a VERDICT. Run BY A CAPTURE SUBAGENT briefed by the coordinator: detached worktree at the true fork point for "before", both stacks on private ports, session injection instead of typed credentials, per-shot route/theme/title assertions, phone overflow probe, fixture restore with proof. Use whenever a PR changes what a user sees.
+description: Capture before/after screenshot pairs for a UI PR and emit an rp-gallery manifest plus a VERDICT. Run BY A CAPTURE SUBAGENT briefed by the coordinator: detached worktree at the true fork point for "before", both stacks on private ports, session injection instead of typed credentials, per-shot route/theme/title assertions, phone overflow probe, fixture restore with proof. Use when a PR makes a big UI change (new surface, layout, new component or flow, redesign, several surfaces); small changes are declared, not captured.
 user-invocable: true
 argument-hint: "<path to the capture brief, or the brief inline>"
 version: 1.0.0

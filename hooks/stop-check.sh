@@ -145,14 +145,18 @@ for url in urls:
         UI_DIR_RE.search("/" + p) or UI_EXT_RE.search(p) for p in paths
     )
     body = pr.get("body") or ""
-    # A UI-path diff that renders nothing differently is declared, not captured.
+    # No-render-change and small UI diffs are declared, not captured.
     no_visual_change = re.search(r"(?im)^[ \t]*no visual change:[ \t]*\S", body)
+    small_change = re.search(
+        r"(?im)^[ \t]*no screenshots:[ \t]*small change[ \t]*\([ \t]*[^)\s]", body
+    )
     has_gallery = re.search(r"claude\.ai/(code/)?artifact/", body)
-    if touches_ui and not has_gallery and not no_visual_change:
+    if touches_ui and not (has_gallery or no_visual_change or small_change):
         problems.append(
             "PR %s changes UI but its body has no gallery link. Run "
             "capture-pairs + rp-gallery and pr-append-section, or, if nothing "
-            "renders differently, add a 'No visual change: <evidence>' line." % url
+            "renders differently, add a 'No visual change: <evidence>' line, "
+            "or, for a small change, 'No screenshots: small change (<what>)'." % url
         )
 
     if (pr.get("mergeStateStatus") or "").upper() == "DIRTY":
