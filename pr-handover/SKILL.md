@@ -33,7 +33,8 @@ git log --oneline -5
   "`/review` ran on `<HEAD_SHA>`, N findings addressed (or 0 findings)". If the
   recorded SHA is older than HEAD, re-run review on HEAD or state in the PR body
   that the later commit was only the auto-fix batch from the recorded SHA. No
-  review line for this HEAD means go back to review, not forward.
+  review line for this HEAD means go back to review, not forward. The same holds
+  for any extra reviewer your CLAUDE.md requires for this repo.
 - An agent saying "done" is not evidence; `git log`, `git status` and the file
   are.
 
