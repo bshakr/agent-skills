@@ -4,7 +4,7 @@ Command-line tools the skills in this repo call by name. Dependencies: `bash`, `
 `jq`, `git`, `linear`; Pillow is optional and detected at runtime by `rp-gallery`.
 
 ```bash
-for s in pr-ci-wait pr-append-section rp-gallery linear-start; do
+for s in pr-ci-wait pr-append-section rp-gallery linear-start gwt-prune-merged; do
   ln -sfn ~/code/agent-skills/bin/$s ~/.local/bin/$s
 done
 ```
@@ -103,3 +103,17 @@ so the name is derived from the title with the CLI's own slug rule instead (veri
 
 Exit: **0** In Progress, **1** state did not stick or a CLI call failed, **3** ticket not found, **4** CLI
 unauthenticated (prints `linear login`), **64** usage.
+
+## `gwt-prune-merged`
+
+```
+gwt-prune-merged            # dry run
+gwt-prune-merged --force    # remove the worktrees and delete their local branches
+```
+
+Run from any checkout of the repo. Deletes a worktree only when its branch has a merged PR on GitHub
+(`gh pr list --state merged --limit 1000`). Being an ancestor of `origin/main` is not enough: a fresh
+worktree with no commits is one, and so is a coordinator worktree that drives agents elsewhere and never
+commits. Kept and listed with `⚠`: uncommitted changes, an open PR, or commits the merged PR's head does
+not contain. Unlocks locked worktrees before removing them. When the repo ships an executable
+`bin/worktree-db`, it calls `worktree-db drop <path>` (with `--dry-run` on a dry run) for each removal.
