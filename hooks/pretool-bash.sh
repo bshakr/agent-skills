@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # PreToolUse hook, matcher: Bash
 #
-# Blocks the five Bash shapes that cost Bass real time this month:
+# Blocks the four Bash shapes that cost Bass real time this month:
 #   gh pr merge            merging is never Claude's call
 #   git add -A / commit -a concurrent agents share the index
 #   railway variables      without --json this renders secrets in the transcript
-#   gwt-prune-merged --force  sweeps commitless worktrees a live agent still owns
 #   leading sleep          foreground polling burns the turn
 #
 # FAIL-OPEN. Bypass: CLAUDE_SKIP_BASH_HOOK=1 (all), CLAUDE_ALLOW_PR_MERGE=1,
 #   CLAUDE_ALLOW_GIT_ADD_ALL=1, CLAUDE_ALLOW_RAILWAY_VARS=1,
-#   CLAUDE_ALLOW_PRUNE_FORCE=1, CLAUDE_ALLOW_SLEEP=1.
+#   CLAUDE_ALLOW_SLEEP=1.
 set -uo pipefail
 
 INPUT=$(cat)
@@ -83,63 +82,7 @@ if not off("CLAUDE_ALLOW_RAILWAY_VARS") and re.search(
             "prints names and SHA-256 of values only."
         )
 
-# 4. gwt-prune-merged --force would sweep commitless live worktrees
-if not off("CLAUDE_ALLOW_PRUNE_FORCE") and re.search(
-    POS + r"gwt-prune-merged\b", cmd
-) and re.search(r"(?:^|\s)(?:--force|-f)(?:\s|$)", cmd):
-
-    def git(args, timeout=5):
-        return subprocess.run(
-            ["git"] + args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-    try:
-        listing = git(["worktree", "list", "--porcelain"])
-        if listing.returncode == 0:
-            blocks, current = [], {}
-            for line in listing.stdout.splitlines():
-                if not line.strip():
-                    if current:
-                        blocks.append(current)
-                        current = {}
-                    continue
-                key, _, value = line.partition(" ")
-                current[key] = value
-            if current:
-                blocks.append(current)
-
-            at_risk = []
-            for block in blocks[1:]:  # blocks[0] is the main worktree
-                if "locked" in block or "bare" in block or "detached" in block:
-                    continue
-                ref = block.get("branch") or ""
-                if not ref.startswith("refs/heads/"):
-                    continue
-                branch = ref[len("refs/heads/") :]
-                counted = git(
-                    ["rev-list", "--count", "origin/main..%s" % branch]
-                )
-                if counted.returncode != 0:
-                    continue
-                if counted.stdout.strip() == "0":
-                    at_risk.append(
-                        "%s (%s)" % (block.get("worktree", "?"), branch)
-                    )
-
-            if at_risk:
-                deny(
-                    "These worktrees are commitless and would be swept as "
-                    "merged: %s. `git worktree lock` each live one first, then "
-                    "re-run." % ", ".join(at_risk)
-                )
-    except Exception as exc:  # fail open on any git trouble
-        sys.stderr.write("pretool-bash.sh: prune guard skipped (%s)\n" % exc)
-
-# 5. no foreground polling
+# 4. no foreground polling
 if not off("CLAUDE_ALLOW_SLEEP") and re.match(r"^\s*sleep\b", cmd):
     deny("Run pr-ci-wait (CI) or pr-merge-wait (merges) with run_in_background; the harness wakes you when it exits.")
 
