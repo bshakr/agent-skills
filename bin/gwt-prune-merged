@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+#
+# gwt-prune-merged — remove git worktrees whose branch has already landed.
+#
+#   gwt-prune-merged            dry run (default)
+#   gwt-prune-merged --force    actually delete
+#
+# Only a branch with a merged PR on GitHub is deleted. Being an ancestor of
+# origin/<default> is not enough: a fresh worktree with no commits is one, and
+# a coordinator worktree that drives agents elsewhere never commits at all.
+#
+# Never deletes a worktree that has uncommitted changes, an open PR, or commits
+# the merged PR did not contain — those are reported in the summary instead.
+
+set -uo pipefail
+
+FORCE=0
+[[ "${1:-}" == "--force" || "${1:-}" == "-f" ]] && FORCE=1
+
+if [[ -t 1 ]]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; GRN=$'\033[32m'; YLW=$'\033[33m'; RST=$'\033[0m'
+else
+  BOLD=''; DIM=''; GRN=''; YLW=''; RST=''
+fi
+
+REPO=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not a git repo"; exit 1; }
+# The main checkout's copy of a repo script, whichever worktree this runs from.
+MAIN_CHECKOUT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+MAIN=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || MAIN="origin/main"
+MAIN=${MAIN#refs/remotes/}
+
+echo "${DIM}fetching ${MAIN}...${RST}"
+git fetch "${MAIN%%/*}" "${MAIN#*/}" --quiet 2>/dev/null
+
+MERGED_PRS='' ; OPEN_PRS=''
+if command -v gh >/dev/null 2>&1; then
+  MERGED_PRS=$(gh pr list --state merged --limit 1000 \
+    --json headRefName,number,headRefOid --jq '.[] | "\(.headRefName)\t\(.number)\t\(.headRefOid)"' 2>/dev/null)
+  OPEN_PRS=$(gh pr list --state open --limit 200 \
+    --json headRefName,number --jq '.[] | "\(.headRefName)\t\(.number)"' 2>/dev/null)
+else
+  echo "${YLW}warning:${RST} gh not found — squash-merged branches will look unmerged"
+fi
+
+# exact match on the tab-delimited branch field (BSD grep has no -P)
+pr_for() { awk -F'\t' -v b="$1" '$1 == b { print $2; exit }' <<<"$2"; }
+
+DELETED=(); KEPT=()
+
+while IFS=$'\t' read -r WT BR; do
+  [[ -z "$BR" ]] && continue
+  [[ "$WT" == "$REPO" ]] && continue
+  [[ "$BR" == "${MAIN#*/}" ]] && continue
+
+  merged_pr=$(pr_for "$BR" "$MERGED_PRS")
+  open_pr=$(pr_for "$BR" "$OPEN_PRS")
+
+  if [[ -z "$merged_pr" ]]; then
+    ahead=$(git rev-list --count "${MAIN}..${BR}" 2>/dev/null || echo '?')
+    KEPT+=("·|${BR}|no merged PR (${ahead} ahead)")
+    continue
+  fi
+  why="PR#${merged_pr}"
+  merged_head=$(awk -F'\t' -v b="$BR" '$1 == b { print $3; exit }' <<<"$MERGED_PRS")
+
+  # --- guards: never delete work that isn't safely captured ---
+  dirty=$(git -C "$WT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  blockers=()
+  [[ "$dirty" != "0" ]] && blockers+=("${dirty} uncommitted file(s)")
+  [[ -n "$open_pr" ]] && blockers+=("open PR#${open_pr}")
+  if [[ -n "$merged_head" ]] && ! git merge-base --is-ancestor "$BR" "$merged_head" 2>/dev/null; then
+    blockers+=("commits after the merged PR")
+  fi
+
+  if (( ${#blockers[@]} )); then
+    joined=$(IFS=', '; echo "${blockers[*]}")
+    KEPT+=("!|${BR}|merged (${why}) but ${joined}")
+    continue
+  fi
+
+  if (( FORCE )); then
+    git worktree unlock "$WT" >/dev/null 2>&1
+    if git worktree remove "$WT" >/dev/null 2>&1; then
+      git branch -D "$BR" >/dev/null 2>&1
+      DELETED+=("${BR}|${why}")
+      # A repo whose worktrees own databases ships this script to drop them.
+      # stdin is the worktree list this loop reads.
+      if [[ -x "$MAIN_CHECKOUT/bin/worktree-db" ]]; then
+        "$MAIN_CHECKOUT/bin/worktree-db" drop "$WT" </dev/null ||
+          echo "${YLW}warning:${RST} bin/worktree-db drop failed for $WT; drop its databases by hand" >&2
+      fi
+    else
+      KEPT+=("!|${BR}|merged (${why}) but 'git worktree remove' failed")
+    fi
+  else
+    DELETED+=("${BR}|${why}")
+    if [[ -x "$MAIN_CHECKOUT/bin/worktree-db" ]]; then
+      "$MAIN_CHECKOUT/bin/worktree-db" drop --dry-run "$WT" </dev/null ||
+        echo "${YLW}warning:${RST} bin/worktree-db could not list the databases of $WT" >&2
+    fi
+  fi
+done < <(git worktree list --porcelain | awk '
+  /^worktree /{w=substr($0,10)}
+  /^branch /{b=substr($0,8); sub("refs/heads/","",b); print w"\t"b}
+')
+
+git worktree prune
+
+# ------------------------------- summary -------------------------------------
+verb=$( ((FORCE)) && echo "DELETED" || echo "WOULD DELETE" )
+echo
+echo "${BOLD}═══ Merged worktree cleanup ═══${RST}"
+echo
+printf '%s%s (%d)%s\n' "$GRN" "$verb" "${#DELETED[@]}" "$RST"
+if (( ${#DELETED[@]} )); then
+  for e in "${DELETED[@]}"; do
+    printf '  %s✓%s %-46s %s%s%s\n' "$GRN" "$RST" "${e%%|*}" "$DIM" "${e#*|}" "$RST"
+  done
+else
+  echo "  ${DIM}(none)${RST}"
+fi
+
+echo
+printf '%sKEPT (%d)%s\n' "$BOLD" "${#KEPT[@]}" "$RST"
+if (( ${#KEPT[@]} )); then
+  # blocked entries (!) first — those are the ones worth a human look
+  for want in '!' '·'; do
+    for e in "${KEPT[@]}"; do
+      [[ "${e%%|*}" == "$want" ]] || continue
+      rest=${e#*|}; br=${rest%%|*}; reason=${rest#*|}
+      if [[ "$want" == '!' ]]; then
+        printf '  %s⚠%s %-46s %s%s%s\n' "$YLW" "$RST" "$br" "$YLW" "$reason" "$RST"
+      else
+        printf '  %s·  %-46s %s%s\n' "$DIM" "$br" "$reason" "$RST"
+      fi
+    done
+  done
+fi
+
+echo
+if (( FORCE )); then
+  echo "${DIM}Done. ⚠ entries were skipped — resolve them by hand.${RST}"
+else
+  echo "${DIM}Dry run. Re-run with --force to actually delete.${RST}"
+fi
